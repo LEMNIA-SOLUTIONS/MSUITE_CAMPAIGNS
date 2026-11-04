@@ -1,0 +1,423 @@
+{
+    "actions": [],
+    "allow_rename": 0,
+    "autoname": "hash",
+    "creation": "2026-07-13 00:00:00.000000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "section_reference",
+        "marketing_campaign",
+        "date",
+        "granularity",
+        "column_break_reference",
+        "insight_key",
+        "section_kpis",
+        "total_spend",
+        "total_reach",
+        "total_engagement",
+        "total_leads",
+        "total_conversations",
+        "section_ads",
+        "ads_spend",
+        "ads_impressions",
+        "ads_clicks",
+        "ads_reach",
+        "ads_conversions",
+        "ads_conversion_value",
+        "ads_ctr",
+        "ads_cpc",
+        "ads_cpm",
+        "ads_roas",
+        "ads_cost_per_conversion",
+        "ads_frequency",
+        "ads_conversion_rate",
+        "section_social",
+        "social_impressions",
+        "social_reach",
+        "social_clicks",
+        "social_engagement",
+        "social_reactions",
+        "social_comments",
+        "social_shares",
+        "social_saves",
+        "social_video_views",
+        "social_video_completions",
+        "social_engagement_rate",
+        "social_posts",
+        "section_whatsapp",
+        "whatsapp_recipients",
+        "whatsapp_sent",
+        "whatsapp_delivered",
+        "whatsapp_read",
+        "whatsapp_failed",
+        "whatsapp_delivery_rate",
+        "whatsapp_read_rate",
+        "section_attribution",
+        "leads",
+        "conversations"
+    ],
+    "fields": [
+        {
+            "fieldname": "section_reference",
+            "fieldtype": "Section Break",
+            "label": "Reference"
+        },
+        {
+            "fieldname": "marketing_campaign",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+            "label": "Marketing Campaign",
+            "options": "Marketing Campaign",
+            "reqd": 1
+        },
+        {
+            "fieldname": "date",
+            "fieldtype": "Date",
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+            "label": "Date",
+            "reqd": 1,
+            "search_index": 1
+        },
+        {
+            "default": "DAY",
+            "fieldname": "granularity",
+            "fieldtype": "Select",
+            "in_standard_filter": 1,
+            "label": "Granularity",
+            "options": "DAY\nLIFETIME",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_reference",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "insight_key",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Insight Key",
+            "read_only": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "section_kpis",
+            "fieldtype": "Section Break",
+            "label": "KPI Summary"
+        },
+        {
+            "fieldname": "total_spend",
+            "fieldtype": "Currency",
+            "label": "Total Spend",
+            "read_only": 1
+        },
+        {
+            "fieldname": "total_reach",
+            "fieldtype": "Int",
+            "label": "Total Reach",
+            "read_only": 1
+        },
+        {
+            "fieldname": "total_engagement",
+            "fieldtype": "Int",
+            "label": "Total Engagement",
+            "read_only": 1
+        },
+        {
+            "fieldname": "total_leads",
+            "fieldtype": "Int",
+            "label": "Total Leads",
+            "read_only": 1
+        },
+        {
+            "fieldname": "total_conversations",
+            "fieldtype": "Int",
+            "label": "Total Conversations",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_ads",
+            "fieldtype": "Section Break",
+            "label": "Ads Performance"
+        },
+        {
+            "fieldname": "ads_spend",
+            "fieldtype": "Currency",
+            "label": "Ads Spend",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_impressions",
+            "fieldtype": "Int",
+            "label": "Ads Impressions",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_clicks",
+            "fieldtype": "Int",
+            "label": "Ads Clicks",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_reach",
+            "fieldtype": "Int",
+            "label": "Ads Reach",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_conversions",
+            "fieldtype": "Int",
+            "label": "Ads Conversions",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_conversion_value",
+            "fieldtype": "Currency",
+            "label": "Ads Conversion Value",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_ctr",
+            "fieldtype": "Percent",
+            "label": "Ads CTR",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_cpc",
+            "fieldtype": "Currency",
+            "label": "Ads CPC",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_cpm",
+            "fieldtype": "Currency",
+            "label": "Ads CPM",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_roas",
+            "fieldtype": "Float",
+            "label": "Ads ROAS",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_cost_per_conversion",
+            "fieldtype": "Currency",
+            "label": "Ads Cost per Conversion",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_frequency",
+            "fieldtype": "Float",
+            "label": "Ads Frequency",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ads_conversion_rate",
+            "fieldtype": "Float",
+            "label": "Ads Conversion Rate",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_social",
+            "fieldtype": "Section Break",
+            "label": "Social Performance"
+        },
+        {
+            "fieldname": "social_impressions",
+            "fieldtype": "Int",
+            "label": "Social Impressions",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_reach",
+            "fieldtype": "Int",
+            "label": "Social Reach",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_clicks",
+            "fieldtype": "Int",
+            "label": "Social Clicks",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_engagement",
+            "fieldtype": "Int",
+            "label": "Social Engagement",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_reactions",
+            "fieldtype": "Int",
+            "label": "Social Reactions",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_comments",
+            "fieldtype": "Int",
+            "label": "Social Comments",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_shares",
+            "fieldtype": "Int",
+            "label": "Social Shares",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_saves",
+            "fieldtype": "Int",
+            "label": "Social Saves",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_video_views",
+            "fieldtype": "Int",
+            "label": "Social Video Views",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_video_completions",
+            "fieldtype": "Int",
+            "label": "Social Video Completions",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_engagement_rate",
+            "fieldtype": "Float",
+            "label": "Social Engagement Rate",
+            "read_only": 1
+        },
+        {
+            "fieldname": "social_posts",
+            "fieldtype": "Int",
+            "label": "Social Posts Count",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_whatsapp",
+            "fieldtype": "Section Break",
+            "label": "WhatsApp Performance"
+        },
+        {
+            "fieldname": "whatsapp_recipients",
+            "fieldtype": "Int",
+            "label": "WhatsApp Recipients",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_sent",
+            "fieldtype": "Int",
+            "label": "WhatsApp Sent",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_delivered",
+            "fieldtype": "Int",
+            "label": "WhatsApp Delivered",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_read",
+            "fieldtype": "Int",
+            "label": "WhatsApp Read",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_failed",
+            "fieldtype": "Int",
+            "label": "WhatsApp Failed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_delivery_rate",
+            "fieldtype": "Float",
+            "label": "WhatsApp Delivery Rate",
+            "read_only": 1
+        },
+        {
+            "fieldname": "whatsapp_read_rate",
+            "fieldtype": "Float",
+            "label": "WhatsApp Read Rate",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_attribution",
+            "fieldtype": "Section Break",
+            "label": "Attribution"
+        },
+        {
+            "fieldname": "leads",
+            "fieldtype": "Int",
+            "label": "Attributed Leads",
+            "read_only": 1
+        },
+        {
+            "fieldname": "conversations",
+            "fieldtype": "Int",
+            "label": "Attributed Conversations",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "links": [],
+    "modified": "2026-07-13 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Campaign",
+    "name": "Marketing Campaign Insight",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "MSuite Admin",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "permlevel": 0,
+            "read": 1,
+            "report": 1,
+            "role": "Campaign Manager",
+            "write": 1
+        },
+        {
+            "create": 1,
+            "permlevel": 0,
+            "read": 1,
+            "report": 1,
+            "role": "Campaign User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "report": 1,
+            "role": "MSuite Viewer"
+        }
+    ],
+    "sort_field": "date",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 1
+}

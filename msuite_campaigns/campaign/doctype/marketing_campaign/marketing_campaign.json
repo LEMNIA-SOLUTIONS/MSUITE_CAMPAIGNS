@@ -1,0 +1,465 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-04-17 08:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "tab_overview",
+  "naming_series",
+  "campaign_name",
+  "objective",
+  "goal",
+  "column_break_overview",
+  "status",
+  "start_date",
+  "end_date",
+  "section_budget",
+  "budget",
+  "column_break_budget",
+  "spent",
+  "section_tracking",
+  "utm_source",
+  "utm_medium",
+  "column_break_tracking",
+  "utm_campaign",
+  "utm_term",
+  "section_engagement",
+  "first_comment_template",
+  "section_recurrence",
+  "recurrence_pattern",
+  "recurrence_interval",
+  "column_break_recurrence",
+  "recurrence_end_at",
+  "next_run_at",
+  "parent_recurring_campaign",
+  "tab_channels",
+  "section_social",
+  "social_posts_html",
+  "section_whatsapp",
+  "whatsapp_blast",
+  "audience",
+  "email_blast",
+  "sms_blast",
+  "section_ads",
+  "ad_campaigns_html",
+  "tab_performance",
+  "performance_html",
+  "section_launch_status",
+  "launch_status",
+  "launch_error",
+  "queued_total"
+ ],
+ "fields": [
+  {
+   "fieldname": "tab_overview",
+   "fieldtype": "Tab Break",
+   "label": "Overview"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "options": "CAMP-.YYYY.-.#####",
+   "default": "CAMP-.YYYY.-.#####",
+   "hidden": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "campaign_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Campaign Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "objective",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Objective",
+   "options": "\nAwareness\nTraffic\nEngagement\nRe-engagement\nLeads\nSales\nApp Promotion\nCustom",
+   "description": "Set once on the umbrella; inherited by every child Social Post + Ad Campaign. Ad publishing maps these to Meta's OUTCOME_* values."
+  },
+  {
+   "fieldname": "goal",
+   "fieldtype": "Small Text",
+   "label": "Goal",
+   "description": "Free-text description (the human story). Objective above drives the platform-level optimisation."
+  },
+  {
+   "fieldname": "column_break_overview",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nScheduled\nIn Progress\nActive\nPaused\nCompleted\nPartially Failed\nFailed\nCancelled\nArchived",
+   "default": "Draft",
+   "reqd": 1
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Start Date",
+   "description": "Campaign goes live at this moment. Child Social posts / Ad campaigns can only schedule on or after this time."
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Datetime",
+   "label": "End Date",
+   "description": "Campaign window closes at this moment. Child schedules cannot fall after this time."
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_budget",
+   "fieldtype": "Section Break",
+   "label": "Budget"
+  },
+  {
+   "fieldname": "budget",
+   "fieldtype": "Currency",
+   "label": "Budget"
+  },
+  {
+   "fieldname": "column_break_budget",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "spent",
+   "fieldtype": "Currency",
+   "label": "Spent",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_tracking",
+   "fieldtype": "Section Break",
+   "label": "UTM Tracking",
+   "description": "Set once on the campaign; the publisher auto-injects these tags into every URL inside child Social Post captions. Empty fields are skipped (you don't need to fill all five)."
+  },
+  {
+   "fieldname": "utm_source",
+   "fieldtype": "Data",
+   "label": "UTM Source",
+   "description": "Defaults to the platform name per post (facebook, instagram, ...). Set here to force a single value across platforms."
+  },
+  {
+   "fieldname": "utm_medium",
+   "fieldtype": "Data",
+   "label": "UTM Medium",
+   "default": "social"
+  },
+  {
+   "fieldname": "column_break_tracking",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "utm_campaign",
+   "fieldtype": "Data",
+   "label": "UTM Campaign",
+   "description": "Defaults to a URL-safe slug of the campaign name when blank."
+  },
+  {
+   "fieldname": "utm_term",
+   "fieldtype": "Data",
+   "label": "UTM Term"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_engagement",
+   "fieldtype": "Section Break",
+   "label": "First Comment"
+  },
+  {
+   "fieldname": "first_comment_template",
+   "fieldtype": "Long Text",
+   "label": "First-Comment Template",
+   "description": "Auto-posted as the first comment after each child post publishes (Meta only). Variables: {hashtags}, {campaign_name}, {link}. Leave blank to skip."
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_recurrence",
+   "fieldtype": "Section Break",
+   "label": "Recurrence"
+  },
+  {
+   "fieldname": "recurrence_pattern",
+   "fieldtype": "Select",
+   "label": "Repeat Every",
+   "options": "\nDaily\nWeekly\nMonthly",
+   "description": "Clone the whole campaign (UTM, first-comment, all child Social Posts) on this cadence."
+  },
+  {
+   "fieldname": "recurrence_interval",
+   "fieldtype": "Int",
+   "label": "Interval",
+   "default": "1",
+   "depends_on": "recurrence_pattern",
+   "description": "Repeat every N units of the chosen pattern (e.g. 2 + Weekly = every other week)."
+  },
+  {
+   "fieldname": "column_break_recurrence",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "recurrence_end_at",
+   "fieldtype": "Datetime",
+   "label": "Repeat Until",
+   "depends_on": "recurrence_pattern"
+  },
+  {
+   "fieldname": "next_run_at",
+   "fieldtype": "Datetime",
+   "label": "Next Run At",
+   "read_only": 1,
+   "depends_on": "recurrence_pattern",
+   "description": "Computed from start_date + pattern; updated each time the cloner fires."
+  },
+  {
+   "fieldname": "parent_recurring_campaign",
+   "fieldtype": "Link",
+   "options": "Marketing Campaign",
+   "label": "Cloned From",
+   "read_only": 1,
+   "description": "Set on every clone \u2014 points back to the original recurring campaign."
+  },
+  {
+   "fieldname": "tab_channels",
+   "fieldtype": "Tab Break",
+   "label": "Channels"
+  },
+  {
+   "fieldname": "section_social",
+   "fieldtype": "Section Break",
+   "label": "Social"
+  },
+  {
+   "fieldname": "social_posts_html",
+   "fieldtype": "HTML",
+   "label": "Social Posts",
+   "description": "All Social Posts linked to this top-level Campaign via their `campaign` field."
+  },
+  {
+   "fieldname": "section_whatsapp",
+   "fieldtype": "Section Break",
+   "label": "WhatsApp"
+  },
+  {
+   "fieldname": "whatsapp_blast",
+   "fieldtype": "Link",
+   "label": "WhatsApp Blast (legacy)",
+   "options": "Bulk WhatsApp Message",
+   "read_only": 1,
+   "description": "Deprecated \u2014 kept read-only for backward compatibility. A Campaign can now have many broadcasts via Bulk WhatsApp Message.campaign (see patches.add_campaign_link_to_bulk_whatsapp_message). Use the Channels tab's WhatsApp section instead of this field."
+  },
+  {
+   "fieldname": "section_ads",
+   "fieldtype": "Section Break",
+   "label": "Ads"
+  },
+  {
+   "fieldname": "ad_campaigns_html",
+   "fieldtype": "HTML",
+   "label": "Ad Campaigns",
+   "description": "Ad Campaigns linked here via their `campaign` field. One top-level Campaign can run multiple Ad Campaigns (Meta + Google / A/B splits)."
+  },
+  {
+   "fieldname": "tab_performance",
+   "fieldtype": "Tab Break",
+   "label": "Performance",
+   "depends_on": "eval:doc.status && doc.status !== 'Draft'",
+   "description": "Visible only after the Campaign has been run \u2014 Draft campaigns have no metrics yet."
+  },
+  {
+   "fieldname": "performance_html",
+   "fieldtype": "HTML",
+   "label": "Performance Dashboard"
+  },
+  {
+   "fieldname": "audience",
+   "fieldtype": "Link",
+   "label": "Audience",
+   "options": "Audience"
+  },
+  {
+   "fieldname": "email_blast",
+   "fieldtype": "Link",
+   "label": "Email Blast",
+   "options": "Bulk Email Message"
+  },
+  {
+   "fieldname": "sms_blast",
+   "fieldtype": "Link",
+   "label": "SMS Blast",
+   "options": "Bulk SMS Message"
+  },
+  {
+   "fieldname": "section_launch_status",
+   "fieldtype": "Section Break",
+   "label": "Launch Status",
+   "hidden": 1
+  },
+  {
+   "fieldname": "launch_status",
+   "fieldtype": "Data",
+   "label": "Launch Status",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Tracks async launch progress: Preparing / Launched / Failed"
+  },
+  {
+   "fieldname": "launch_error",
+   "fieldtype": "Small Text",
+   "label": "Launch Error",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "queued_total",
+   "fieldtype": "Int",
+   "label": "Queued Total",
+   "read_only": 1,
+   "hidden": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [
+  {
+   "link_doctype": "Ad Campaign",
+   "link_fieldname": "campaign"
+  },
+  {
+   "link_doctype": "Social Post",
+   "link_fieldname": "campaign"
+  },
+  {
+   "link_doctype": "Bulk WhatsApp Message",
+   "link_fieldname": "campaign"
+  }
+ ],
+ "modified": "2026-08-23 20:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Campaign",
+ "name": "Marketing Campaign",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign User",
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Viewer"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "SMS Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "SMS User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Email Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Email User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Social Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Social User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Ads Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Ads User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "campaign_name",
+ "show_title_field_in_link": 1,
+ "track_changes": 1
+}

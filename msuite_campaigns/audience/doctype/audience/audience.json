@@ -1,0 +1,274 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:audience_name",
+ "creation": "2026-08-08 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "audience_name",
+  "description",
+  "column_break_head",
+  "source",
+  "default_region",
+  "section_rollup",
+  "total_members",
+  "valid_phone_count",
+  "column_break_rollup",
+  "valid_email_count",
+  "last_validated_at",
+  "section_import",
+  "import_from_doctype",
+  "doctype_to_import",
+  "phone_field",
+  "email_field",
+  "name_field",
+  "column_break_import",
+  "import_filters",
+  "data_fields",
+  "import_limit",
+  "section_members",
+  "members"
+ ],
+ "fields": [
+  {
+   "fieldname": "audience_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Audience Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Manual\nCSV Upload\nDocType Import\nSegment"
+  },
+  {
+   "default": "IN",
+   "description": "ISO 3166-1 alpha-2. Used to parse phone numbers that arrive without a country code. Falls back to MSuite Settings.default_phone_region.",
+   "fieldname": "default_region",
+   "fieldtype": "Data",
+   "label": "Default Phone Region"
+  },
+  {
+   "fieldname": "section_rollup",
+   "fieldtype": "Section Break",
+   "label": "Validation"
+  },
+  {
+   "fieldname": "total_members",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Total Members",
+   "read_only": 1
+  },
+  {
+   "description": "Members with a Valid, mobile-reachable number.",
+   "fieldname": "valid_phone_count",
+   "fieldtype": "Int",
+   "label": "Reachable Phones",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_rollup",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Members whose email passes the default risk policy (ok / catch_all / error).",
+   "fieldname": "valid_email_count",
+   "fieldtype": "Int",
+   "label": "Deliverable Emails",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_validated_at",
+   "fieldtype": "Datetime",
+   "label": "Last Validated At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_import",
+   "fieldtype": "Section Break",
+   "label": "Import From DocType"
+  },
+  {
+   "default": "0",
+   "fieldname": "import_from_doctype",
+   "fieldtype": "Check",
+   "label": "Import From DocType"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "doctype_to_import",
+   "fieldtype": "Link",
+   "label": "DocType",
+   "options": "DocType"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "phone_field",
+   "fieldtype": "Data",
+   "label": "Phone Field"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "email_field",
+   "fieldtype": "Data",
+   "label": "Email Field"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "name_field",
+   "fieldtype": "Data",
+   "label": "Name Field"
+  },
+  {
+   "fieldname": "column_break_import",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "import_filters",
+   "fieldtype": "Code",
+   "label": "Filters",
+   "options": "JSON"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "description": "Extra fields to carry into recipient_data for merge tags.",
+   "fieldname": "data_fields",
+   "fieldtype": "Code",
+   "label": "Data Fields",
+   "options": "JSON"
+  },
+  {
+   "depends_on": "import_from_doctype",
+   "fieldname": "import_limit",
+   "fieldtype": "Int",
+   "label": "Import Limit"
+  },
+  {
+   "fieldname": "section_members",
+   "fieldtype": "Section Break",
+   "label": "Members"
+  },
+  {
+   "fieldname": "members",
+   "fieldtype": "Table",
+   "label": "Members",
+   "options": "Audience Member"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-08-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Audience",
+ "name": "Audience",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign User",
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Viewer"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "SMS Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "SMS User"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Email Manager"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Email User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

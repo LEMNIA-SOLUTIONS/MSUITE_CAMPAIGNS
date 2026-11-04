@@ -1,0 +1,201 @@
+{
+    "actions": [],
+    "creation": "2026-06-16 00:00:00.000000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "section_intro",
+        "intro_html",
+        "section_labels",
+        "reach_label",
+        "impressions_label",
+        "engagement_label",
+        "clicks_label",
+        "column_break_labels",
+        "conversions_label",
+        "spend_label",
+        "ctr_label",
+        "roas_label"
+    ],
+    "fields": [
+        {
+            "fieldname": "section_intro",
+            "fieldtype": "Section Break"
+        },
+        {
+            "fieldname": "intro_html",
+            "fieldtype": "HTML",
+            "options": "<div style=\"padding:12px 14px;background:#f8fafc;border-radius:8px;color:#475569;line-height:1.55;font-size:13px;\"><b>Rename metrics, don't redefine them.</b><br>Use these fields to change how labels read across your Performance dashboards — the underlying math is unchanged. Leave a field blank to keep the default label.</div>"
+        },
+        {
+            "fieldname": "section_labels",
+            "fieldtype": "Section Break",
+            "label": "Metric labels"
+        },
+        {
+            "fieldname": "reach_label",
+            "fieldtype": "Data",
+            "label": "Reach",
+            "description": "Default: \"Reach\". Try \"Audience\" or \"Audience touched\"."
+        },
+        {
+            "fieldname": "impressions_label",
+            "fieldtype": "Data",
+            "label": "Impressions",
+            "description": "Default: \"Impressions\". Try \"Views\"."
+        },
+        {
+            "fieldname": "engagement_label",
+            "fieldtype": "Data",
+            "label": "Engagement",
+            "description": "Default: \"Engagement\". Try \"Actions\" or \"Interactions\"."
+        },
+        {
+            "fieldname": "clicks_label",
+            "fieldtype": "Data",
+            "label": "Clicks",
+            "description": "Default: \"Clicks\". Try \"Taps\"."
+        },
+        {
+            "fieldname": "column_break_labels",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "conversions_label",
+            "fieldtype": "Data",
+            "label": "Conversions",
+            "description": "Default: \"Conversions\". Try \"Sales\" or \"Sign-ups\"."
+        },
+        {
+            "fieldname": "spend_label",
+            "fieldtype": "Data",
+            "label": "Spend",
+            "description": "Default: \"Spend\". Try \"Cost\" or \"Investment\"."
+        },
+        {
+            "fieldname": "ctr_label",
+            "fieldtype": "Data",
+            "label": "CTR",
+            "description": "Default: \"CTR\". Try \"Click-through rate\"."
+        },
+        {
+            "fieldname": "roas_label",
+            "fieldtype": "Data",
+            "label": "ROAS",
+            "description": "Default: \"ROAS\". Try \"Return on spend\"."
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "issingle": 1,
+    "links": [],
+    "modified": "2026-06-16 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Performance",
+    "name": "Performance Labels",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "MSuite Admin",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "MSuite Viewer"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "WhatsApp Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "WhatsApp User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "SMS Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "SMS User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Email Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Email User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Social Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Social User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Ads Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Ads User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Campaign Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Campaign User"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Inbox Manager"
+        },
+        {
+            "permlevel": 0,
+            "read": 1,
+            "role": "Inbox Agent"
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 1
+}

@@ -1,0 +1,1 @@
+"""Performance module tests."""

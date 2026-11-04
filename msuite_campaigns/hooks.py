@@ -1,279 +1,97 @@
 app_name = "msuite_campaigns"
 app_title = "MSuite Campaigns"
 app_publisher = "MSuite"
-app_description = "MSuite Campaigns for the MSuite platform."
+app_description = "Marketing campaigns, audiences, the calendar, broadcast dispatch, the AWS bulk pipeline and performance."
 app_email = "dev@msuite.com"
 app_license = "mit"
 
-# Apps
-# ------------------
+required_apps = ["frappe", "msuite_core"]
 
-# required_apps = []
+before_install = "msuite_campaigns.install.before_install"
 
-# Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "msuite_campaigns",
-# 		"logo": "/assets/msuite_campaigns/logo.png",
-# 		"title": "MSuite Campaigns",
-# 		"route": "/msuite_campaigns",
-# 		"has_permission": "msuite_campaigns.api.permission.has_app_permission",
-# 	}
-# ]
+PE = "msuite_core.services.plans.plan_enforcer"
 
-# The dock, the rail down the left of the desk, is a document rather than a hook. Author it in
-# Manage Dock on a developer-mode site and press Export to App, and it is written to
-# `msuite_campaigns/dock/msuite_campaigns/msuite_campaigns.json` for git to carry. An app that ships none has no
-# rail: its sidebar gets a switcher in the header instead.
+# ── Calendar Event sync helper ──
+# Keeps Campaign Calendar Event rows up to date whenever a source
+# document (Marketing Campaign, Social Post, Ad Campaign, Bulk WhatsApp
+# Message) is saved or deleted.
+_CCE = "msuite_campaigns.campaign.doctype.campaign_calendar_event.campaign_calendar_event"
+
+# This app's records in the global search. The key sets the order of the groups.
+msuite_search_sources = {"10_campaigns": "msuite_campaigns.campaign.search.search"}
+
+# What this app shows on the Home page.
+msuite_home_cards = {
+	"campaigns": "msuite_campaigns.campaign.home.running_campaigns",
+	"running_campaign_count": "msuite_campaigns.campaign.home.running_campaign_count",
+}
+
+msuite_home_recent = {
+	"10_campaigns": "msuite_campaigns.campaign.recent.recent_campaigns",
+	"20_audiences": "msuite_campaigns.campaign.recent.recent_audiences",
+}
+
+# This app's plan limits, read by msuite_core.services.plans.plan_enforcer.
+msuite_plan_gates = ["msuite_campaigns.audience.plan_gates.GATES"]
+
+doc_events = {
+	# Unified audience — routes through the shared gate dispatcher
+	# rather than its own function (see audience/plan_gates.py).
+	"Audience": {
+		"before_insert": f"{PE}.enforce_gate",
+		"before_save": f"{PE}.enforce_gate",
+	},
+	# ── Calendar sync — four source doctypes ─────────────────────────────
+	# Each save/delete upserts / removes the Campaign Calendar Event row so
+	# the calendar read path is a single get_all query.
+	"Marketing Campaign": {
+		"after_insert": f"{_CCE}.on_source_save",
+		"on_update": f"{_CCE}.on_source_save",
+		"on_trash": f"{_CCE}.on_source_delete",
+	},
+	"Contact": {
+		"validate": "msuite_campaigns.audience.services.contact_normalize.normalize_contact",
+	},
+}
+
+# ── Campaign lifecycle events ──
+# Phase 4 / Event Architecture. `campaign/services/events.py::emit()`
+# calls every dotted path here as `listener(event_name, campaign,
+# payload)` for EVERY event (filtering by event_name is the listener's
+# job, same as Frappe's own doc_events dispatch).
 #
-# A companion app, one that extends a host app rather than standing on its own, says so with
-# `mount_on` on that same record, and its entries are appended to the host's rail. Mounting keeps
-# the companion off the apps screen, so it takes precedence over any add_to_apps_screen above.
-
-# Includes in <head>
-# ------------------
-
-# include js, css files in header of desk.html
-# app_include_css = "/assets/msuite_campaigns/css/msuite_campaigns.css"
-# app_include_js = "/assets/msuite_campaigns/js/msuite_campaigns.js"
-
-# include js, css files in header of web template
-# web_include_css = "/assets/msuite_campaigns/css/msuite_campaigns.css"
-# web_include_js = "/assets/msuite_campaigns/js/msuite_campaigns.js"
-
-# include custom scss in every website theme (without file extension ".scss")
-# website_theme_scss = "msuite_campaigns/public/scss/website"
-
-# include js, css files in header of web form
-# webform_include_js = {"doctype": "public/js/doctype.js"}
-# webform_include_css = {"doctype": "public/css/doctype.css"}
-
-# include js in page
-# page_js = {"page" : "public/js/file.js"}
-
-# include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
-# doctype_kanban_js = {"doctype" : "public/js/doctype_kanban.js"}
-# doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
-# doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
-
-# Svg Icons
-# ------------------
-# include app icons in desk
-# app_include_icons = "msuite_campaigns/public/icons.svg"
-
-# Home Pages
-# ----------
-
-# application home page (will override Website Settings)
-# home_page = "login"
-
-# website user home page (by Role)
-# role_home_page = {
-# 	"Role": "home_page"
-# }
-
-# Generators
-# ----------
-
-# automatically create page for each record of this doctype
-# website_generators = ["Web Page"]
-
-# automatically load and sync documents of this doctype from downstream apps
-# importable_doctypes = [doctype_1]
-
-# Jinja
-# ----------
-
-# add methods and filters to jinja environment
-# jinja = {
-# 	"methods": "msuite_campaigns.utils.jinja_methods",
-# 	"filters": "msuite_campaigns.utils.jinja_filters"
-# }
-
-# Installation
-# ------------
-
-# before_install = "msuite_campaigns.install.before_install"
-# after_install = "msuite_campaigns.install.after_install"
-
-# Uninstallation
-# ------------
-
-# before_uninstall = "msuite_campaigns.uninstall.before_uninstall"
-# after_uninstall = "msuite_campaigns.uninstall.after_uninstall"
-
-# Integration Setup
-# ------------------
-# To set up dependencies/integrations with other apps
-# Name of the app being installed is passed as an argument
-
-# before_app_install = "msuite_campaigns.utils.before_app_install"
-# after_app_install = "msuite_campaigns.utils.after_app_install"
-
-# Integration Cleanup
-# -------------------
-# To clean up dependencies/integrations with other apps
-# Name of the app being uninstalled is passed as an argument
-
-# before_app_uninstall = "msuite_campaigns.utils.before_app_uninstall"
-# after_app_uninstall = "msuite_campaigns.utils.after_app_uninstall"
-
-# Build
-# ------------------
-# To hook into the build process
-
-# after_build = "msuite_campaigns.build.after_build"
-
-# To hook into the build process of other apps
-# The list of apps being built is passed as an argument
-
-# after_app_build = "msuite_campaigns.build.after_app_build"
-
-# Desk Notifications
-# ------------------
-# See frappe.core.notifications.get_notification_config
-
-# notification_config = "msuite_campaigns.notifications.get_notification_config"
-
-# Awesome Bar
-# -----------
-# Extra search results: list of dicts with label, description, route, index.
-# route: ["List", "ToDo"], "/desk/docs/some/page", or "https://example.com"
-# awesomebar_search = ["msuite_campaigns.search.awesomebar_results"]
-
-# Permissions
-# -----------
-# Permissions evaluated in scripted ways
-
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
+# Note `emit()` does real work regardless of this list — it always fires
+# `frappe.publish_realtime` for live UI. This list is the *additional*
+# in-process subscription seam.
 #
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+# `log_campaign_event` is the built-in listener: side-effect-free, writes
+# no rows (a durable event log is still REQUIRES_APPROVAL — see
+# `campaign/services/events.py`), and exists so this seam is exercised
+# rather than theoretical. It was an empty list, which meant the first
+# module to subscribe would also have been the first to find any wiring
+# bug. A future module (AI Calling, Email, SMS, Automation) adds one line
+# here, same pattern as `campaign_channel_adapters`.
+campaign_event_listeners = [
+	"msuite_campaigns.campaign.services.event_listeners.log_campaign_event",
+]
 
-# Document Events
-# ---------------
-# Hook on document methods and events
-
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
-
-# Scheduled Tasks
-# ---------------
-
-# scheduler_events = {
-# 	"all": [
-# 		"msuite_campaigns.tasks.all"
-# 	],
-# 	"daily": [
-# 		"msuite_campaigns.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"msuite_campaigns.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"msuite_campaigns.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"msuite_campaigns.tasks.monthly"
-# 	],
-# }
-
-# Testing
-# -------
-
-# before_tests = "msuite_campaigns.install.before_tests"
-
-# Extend DocType Class
-# ------------------------------
-#
-# Specify custom mixins to extend the standard doctype controller.
-# extend_doctype_class = {
-# 	"Task": "msuite_campaigns.custom.task.CustomTaskMixin"
-# }
-
-# Overriding Methods
-# ------------------------------
-#
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "msuite_campaigns.event.get_events"
-# }
-#
-# each overriding function accepts a `data` argument;
-# generated from the base implementation of the doctype dashboard,
-# along with any modifications made in other Frappe apps
-# override_doctype_dashboards = {
-# 	"Task": "msuite_campaigns.task.get_dashboard_data"
-# }
-
-# exempt linked doctypes from being automatically cancelled
-#
-# auto_cancel_exempted_doctypes = ["Auto Repeat"]
-
-# Ignore links to specified DocTypes when deleting documents
-# -----------------------------------------------------------
-
-# ignore_links_on_delete = ["Communication", "ToDo"]
-
-# Request Events
-# ----------------
-# before_request = ["msuite_campaigns.utils.before_request"]
-# after_request = ["msuite_campaigns.utils.after_request"]
-
-# Job Events
-# ----------
-# before_job = ["msuite_campaigns.utils.before_job"]
-# after_job = ["msuite_campaigns.utils.after_job"]
-
-# User Data Protection
-# --------------------
-
-# user_data_fields = [
-# 	{
-# 		"doctype": "{doctype_1}",
-# 		"filter_by": "{filter_by}",
-# 		"redact_fields": ["{field_1}", "{field_2}"],
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_2}",
-# 		"filter_by": "{filter_by}",
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_3}",
-# 		"strict": False,
-# 	},
-# 	{
-# 		"doctype": "{doctype_4}"
-# 	}
-# ]
-
-# Authentication and authorization
-# --------------------------------
-
-# auth_hooks = [
-# 	"msuite_campaigns.auth.validate"
-# ]
-
-# Automatically update python controller files with type annotations for this app.
-# export_python_type_annotations = True
-
-# default_log_clearing_doctypes = {
-# 	"Logging DocType Name": 30  # days to retain logs
-# }
-
-# Translation
-# ------------
-# List of apps whose translatable strings should be excluded from this app's translations.
-# ignore_translatable_strings_from = []
-
+scheduler_events = {
+	"cron": {
+		"*/5 * * * *": [
+			"msuite_campaigns.campaign.services.lifecycle.activate_due_marketing_campaigns",
+		],
+		"15 * * * *": [
+			# Campaign spend sync — Analytics Aggregation (Phase 3).
+			# Keeps Marketing Campaign.spent current for Active
+			# campaigns nobody happens to be viewing the dashboard for.
+			"msuite_campaigns.campaign.scheduled_tasks.spend_sync.run",
+		],
+		"0 3 * * *": [
+			# Recurring Campaign cloner — finds Active campaigns whose
+			# `next_run_at` has elapsed and clones the whole umbrella
+			# (Campaign + child Social Posts + their posts) for the
+			# next cycle. Daily cadence; cron is idempotent.
+			"msuite_campaigns.campaign.scheduled_tasks.recurring_cloner.run",
+		],
+	},
+}
