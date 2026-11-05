@@ -58,7 +58,7 @@ values into one number. Values:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Literal
 
 # ─────────────────────────────────────────────────────────────────────
 # Types
@@ -70,6 +70,7 @@ class Source:
 	"""How one channel produces a metric.
 
 	`doctype` + `field` describe the row Source the SUM runs over.
+	`filters` optionally scopes the row query (e.g. reference_doctype + granularity).
 	For derived metrics (CTR, ROAS) we leave both empty and rely on
 	`derived_from` to declare the numerator / denominator pair —
 	`None` (not `()`) so type checkers + readers can distinguish
@@ -79,6 +80,7 @@ class Source:
 	doctype: str = ""
 	field: str = ""
 	derived_from: tuple[str, str] | None = None
+	filters: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -119,10 +121,24 @@ METRICS: dict[str, Metric] = {
 		format="int",
 		aggregate="sum_with_caveat",
 		sources={
-			"ads": Source(doctype="Ad Insight", field="reach"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="reach",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			# Social's normalised Insight table (Phase B) flattens
 			# `post_impressions_unique` from Meta into this column.
-			"social": Source(doctype="Social Insight", field="reach"),
+			"social": Source(
+				doctype="Social Insight",
+				field="reach",
+				filters={
+					"reference_doctype": "Social Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			# WhatsApp doesn't have a unique-recipient column on
 			# Channel Message because every send IS to a unique phone
 			# — `delivered` count == people reached.
@@ -142,8 +158,22 @@ METRICS: dict[str, Metric] = {
 		format="int",
 		aggregate="sum",
 		sources={
-			"ads": Source(doctype="Ad Insight", field="impressions"),
-			"social": Source(doctype="Social Insight", field="impressions"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="impressions",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
+			"social": Source(
+				doctype="Social Insight",
+				field="impressions",
+				filters={
+					"reference_doctype": "Social Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			# WhatsApp = one send = one "view". Same count as `sent`,
 			# surfaced under Impressions for cross-channel comparability.
 			"whatsapp": Source(
@@ -156,7 +186,9 @@ METRICS: dict[str, Metric] = {
 	"engagement": Metric(
 		key="engagement",
 		label="Engagement",
-		tooltip=("Meaningful actions on the content — clicks, likes, comments, shares, replies."),
+		tooltip=(
+			"Meaningful actions on the content — clicks, likes, comments, shares, replies."
+		),
 		format="int",
 		aggregate="sum",
 		sources={
@@ -165,8 +197,22 @@ METRICS: dict[str, Metric] = {
 			# v1 because that's what Ad Insight stores today; a
 			# future Ad Insight column for engagement actions would
 			# land here without changing the catalog signature.
-			"ads": Source(doctype="Ad Insight", field="clicks"),
-			"social": Source(doctype="Social Insight", field="engagement"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="clicks",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
+			"social": Source(
+				doctype="Social Insight",
+				field="engagement",
+				filters={
+					"reference_doctype": "Social Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			# Inbound replies are the "engagement" equivalent for WA.
 			"whatsapp": Source(
 				doctype="Channel Message",
@@ -184,8 +230,22 @@ METRICS: dict[str, Metric] = {
 		format="int",
 		aggregate="sum",
 		sources={
-			"ads": Source(doctype="Ad Insight", field="clicks"),
-			"social": Source(doctype="Social Insight", field="clicks"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="clicks",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
+			"social": Source(
+				doctype="Social Insight",
+				field="clicks",
+				filters={
+					"reference_doctype": "Social Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			"whatsapp": None,
 		},
 	),
@@ -201,7 +261,14 @@ METRICS: dict[str, Metric] = {
 		format="int",
 		aggregate="sum",
 		sources={
-			"ads": Source(doctype="Ad Insight", field="conversions"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="conversions",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			"social": None,
 			"whatsapp": None,
 		},
@@ -214,7 +281,14 @@ METRICS: dict[str, Metric] = {
 		format="money",
 		aggregate="sum",
 		sources={
-			"ads": Source(doctype="Ad Insight", field="spend"),
+			"ads": Source(
+				doctype="Ad Insight",
+				field="spend",
+				filters={
+					"reference_doctype": "Ad Account",
+					"granularity": ["in", ["DAY", "WEEK"]],
+				},
+			),
 			"social": None,  # organic posts have no cost
 			# WhatsApp pricing snapshot — derived per conversation
 			# category. Real value lives on the Pricing snapshot;
@@ -292,7 +366,10 @@ def applies_to(metric_key: str, channel: str) -> bool:
 	Used by the dashboard to render '—' instead of '0' in cells where
 	the metric simply doesn't exist (e.g. Spend on organic Social).
 	"""
-	return METRICS.get(metric_key, None) is not None and METRICS[metric_key].sources.get(channel) is not None
+	return (
+		METRICS.get(metric_key, None) is not None
+		and METRICS[metric_key].sources.get(channel) is not None
+	)
 
 
 def as_payload() -> list[dict]:

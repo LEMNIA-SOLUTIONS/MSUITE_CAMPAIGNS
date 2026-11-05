@@ -87,7 +87,7 @@
             "fieldtype": "Select",
             "in_standard_filter": 1,
             "label": "Granularity",
-            "options": "DAY\nLIFETIME",
+            "options": "DAY\nWEEK\nLIFETIME",
             "reqd": 1
         },
         {
@@ -95,6 +95,7 @@
             "fieldtype": "Column Break"
         },
         {
+            "description": "Deterministic hash of (reference_doctype, marketing_campaign, granularity, bucket). Backfilled and given a real DB unique constraint by the campaign_compact_insight_rows patch.",
             "fieldname": "insight_key",
             "fieldtype": "Data",
             "hidden": 1,
