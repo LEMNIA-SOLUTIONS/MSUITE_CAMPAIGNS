@@ -806,9 +806,9 @@ def get_campaigns_overview(
 		reverse=True,
 	)[:5]
 
-	# If no insight rows exist for period spend, fallback to total_spent when applicable
-	period_spend_for_cpl = spent_this_period if spent_this_period > 0 else total_spent
-	cpl = (period_spend_for_cpl / leads_total) if leads_total else None
+	# Cost per lead uses this period's spend only; no spend recorded gives no CPL ("—"),
+	# never lifetime spend divided by this period's leads.
+	cpl = (spent_this_period / leads_total) if leads_total and spent_this_period > 0 else None
 	prev_cpl = (prev_spend / prev_leads_total) if prev_leads_total else None
 
 	kpis = {
