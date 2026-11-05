@@ -8,6 +8,7 @@ app_license = "mit"
 required_apps = ["frappe", "msuite_core"]
 
 before_install = "msuite_campaigns.install.before_install"
+after_migrate = "msuite_campaigns.setup.install.after_migrate"
 
 PE = "msuite_core.services.plans.plan_enforcer"
 

@@ -506,18 +506,24 @@ def _cross_module_summary(modules: dict[str, dict]) -> dict:
 	}
 
 
-def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
+def get_campaigns_overview(
+	days: int = 30,
+	filters: dict | None = None,
+	period: str | None = None,
+) -> dict:
 	"""Cross-campaign rollup for the Campaigns Dashboard (`/campaigns`) —
 	distinct from `get_campaign_dashboard` above, which is scoped to one
 	campaign's Mission Control page.
 
-	Aggregates DAY and WEEK rows from Marketing Campaign Insight for spend_trend
-	and KPIs without double counting. Excludes LIFETIME rows from range sums.
-	Sets reach_approximate=True when the query window reaches into WEEK rows.
+	Aggregates DAY and WEEK rows from Marketing Campaign Insight for spend_trend,
+	reach, engagement, and conversions without double counting. Excludes LIFETIME rows
+	from range sums. Sets reach_approximate=True when the query window reaches into
+	WEEK rows. Supports periods (7d, mtd/month, 90d/qtr) and previous-period totals.
 
 	Args:
 		days: Window size in days (default 30).
 		filters: Optional filters dictionary on Marketing Campaign.
+		period: Optional period string ('7d', 'mtd'/'month', '90d'/'qtr').
 
 	Returns:
 		dict: Cross-campaign overview dictionary containing kpis, status_distribution,
@@ -531,22 +537,61 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 	"""
 	days = int(days)
 	filters = dict(filters or {})
+	today_date = getdate(today())
+
+	# Resolve period window and previous comparison window
+	if period in ("mtd", "month"):
+		current_until = today_date
+		current_since = today_date.replace(day=1)
+		p_days = (current_until - current_since).days + 1
+		prev_until = current_since - timedelta(days=1)
+		prev_since = prev_until - timedelta(days=p_days - 1)
+		period_label = "month"
+	elif period in ("qtr", "90d") or (not period and days == 90):
+		p_days = 90
+		current_until = today_date
+		current_since = add_days(current_until, -p_days + 1)
+		prev_until = add_days(current_since, -1)
+		prev_since = add_days(prev_until, -p_days + 1)
+		period_label = "qtr"
+	elif period == "7d" or (not period and days == 7):
+		p_days = 7
+		current_until = today_date
+		current_since = add_days(current_until, -p_days + 1)
+		prev_until = add_days(current_since, -1)
+		prev_since = add_days(prev_until, -p_days + 1)
+		period_label = "7d"
+	else:
+		p_days = days if days > 0 else 30
+		current_until = today_date
+		current_since = add_days(current_until, -p_days + 1)
+		prev_until = add_days(current_since, -1)
+		prev_since = add_days(prev_until, -p_days + 1)
+		period_label = f"{p_days}d"
+
+	fields_to_get = [
+		"name",
+		"campaign_name",
+		"status",
+		"objective",
+		"start_date",
+		"end_date",
+		"budget",
+		"spent",
+		"modified",
+		"creation",
+	]
+	has_lead_goal = False
+	if frappe.db.exists("DocType", "Marketing Campaign"):
+		meta = frappe.get_meta("Marketing Campaign")
+		if meta.has_field("lead_goal"):
+			fields_to_get.append("lead_goal")
+			has_lead_goal = True
 
 	rows = frappe.get_all(
 		"Marketing Campaign",
 		filters=filters,
-		fields=[
-			"name",
-			"campaign_name",
-			"status",
-			"objective",
-			"start_date",
-			"end_date",
-			"budget",
-			"spent",
-			"modified",
-			"creation",
-		],
+		fields=fields_to_get,
 		order_by="modified desc",
 		limit=500,
 	)
@@ -555,12 +600,16 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 	by_status: dict[str, int] = {}
 	total_budget = 0.0
 	total_spent = 0.0
+	lead_goal_sum = 0
 	for r in rows:
 		by_status[r["status"]] = by_status.get(r["status"], 0) + 1
 		total_budget += float(r.get("budget") or 0)
 		total_spent += float(r.get("spent") or 0)
+		if has_lead_goal and r.get("lead_goal"):
+			lead_goal_sum += int(r.get("lead_goal") or 0)
 
 	leads_total = 0
+	prev_leads_total = 0
 	leads_by_campaign: dict[str, int] = {}
 	leads_trend: dict[str, int] = {}
 	if (
@@ -568,11 +617,16 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 		and frappe.db.exists("DocType", "CRM Lead")
 		and frappe.get_meta("CRM Lead").has_field("marketing_campaign")
 	):
+		curr_start_dt = f"{current_since} 00:00:00"
+		curr_end_dt = f"{current_until} 23:59:59.999999"
+		prev_start_dt = f"{prev_since} 00:00:00"
+		prev_end_dt = f"{prev_until} 23:59:59.999999"
+
 		lead_rows = frappe.get_all(
 			"CRM Lead",
 			filters={
 				"marketing_campaign": ["in", names],
-				"creation": [">=", frappe.utils.add_days(frappe.utils.now_datetime(), -days)],
+				"creation": ["between", [curr_start_dt, curr_end_dt]],
 			},
 			fields=["marketing_campaign", "creation"],
 		)
@@ -586,11 +640,15 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 			day_key = frappe.utils.getdate(lr["creation"]).isoformat()
 			leads_trend[day_key] = leads_trend.get(day_key, 0) + 1
 
-	# Channel distribution — reuses each registered channel's own
-	# `preview()` (same call `check_campaign_setup` makes per-campaign),
-	# looped here across the visible set rather than duplicating
-	# per-channel doctype names in this file (see relationships.py's
-	# decoupling note).
+		prev_lead_count = frappe.db.count(
+			"CRM Lead",
+			filters={
+				"marketing_campaign": ["in", names],
+				"creation": ["between", [prev_start_dt, prev_end_dt]],
+			},
+		)
+		prev_leads_total = int(prev_lead_count or 0)
+
 	channel_counts: dict[str, int] = {}
 	adapters = get_adapters()
 	for name in names:
@@ -604,9 +662,17 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 
 	spend_trend: dict[str, float] = {}
 	reach_approximate = False
+	total_reach = 0
+	total_engagement = 0
+	total_conversions = 0
+	spent_this_period = 0.0
+
+	prev_spend = 0.0
+	prev_reach = 0
+	prev_engagement = 0
+	prev_conversions = 0
 
 	if names:
-		until = getdate(today())
 		if days <= 0 or days >= _LIFETIME_DAYS:
 			trend_rows = frappe.db.sql(
 				"""
@@ -627,7 +693,6 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 				as_dict=True,
 			)
 		else:
-			since = add_days(until, -days)
 			trend_rows = frappe.db.sql(
 				"""
 				SELECT date,
@@ -644,8 +709,8 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 					"names": tuple(names),
 					"granularity_day": GRANULARITY_DAY,
 					"granularity_week": GRANULARITY_WEEK,
-					"since": since,
-					"until": until,
+					"since": current_since,
+					"until": current_until,
 				},
 				as_dict=True,
 			)
@@ -663,7 +728,67 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 				day_key = frappe.utils.getdate(r["creation"]).isoformat()
 				spend_trend[day_key] = spend_trend.get(day_key, 0) + float(r.get("spent") or 0)
 
-	today_date = getdate(today())
+		# Aggregate current period cross-campaign reach, engagement, conversions, spend
+		curr_agg = frappe.db.sql(
+			"""
+			SELECT
+				COALESCE(SUM(total_spend), 0.0) AS spend,
+				COALESCE(SUM(CASE WHEN granularity = %(granularity_day)s THEN total_reach ELSE 0 END), 0) AS reach,
+				COALESCE(SUM(total_engagement), 0) AS engagement,
+				COALESCE(SUM(ads_conversions), 0) AS conversions,
+				COALESCE(SUM(CASE WHEN granularity = %(granularity_week)s THEN 1 ELSE 0 END), 0) AS week_count
+			FROM `tabMarketing Campaign Insight`
+			WHERE marketing_campaign IN %(names)s
+			  AND granularity IN (%(granularity_day)s, %(granularity_week)s)
+			  AND date BETWEEN %(since)s AND %(until)s
+		""",
+			{
+				"names": tuple(names),
+				"granularity_day": GRANULARITY_DAY,
+				"granularity_week": GRANULARITY_WEEK,
+				"since": current_since,
+				"until": current_until,
+			},
+			as_dict=True,
+		)
+		if curr_agg and curr_agg[0]:
+			ca = curr_agg[0]
+			spent_this_period = float(ca.get("spend") or 0.0)
+			total_reach = int(ca.get("reach") or 0)
+			total_engagement = int(ca.get("engagement") or 0)
+			total_conversions = int(ca.get("conversions") or 0)
+			if int(ca.get("week_count") or 0) > 0:
+				reach_approximate = True
+
+		# Aggregate previous period metrics
+		prev_agg = frappe.db.sql(
+			"""
+			SELECT
+				COALESCE(SUM(total_spend), 0.0) AS spend,
+				COALESCE(SUM(CASE WHEN granularity = %(granularity_day)s THEN total_reach ELSE 0 END), 0) AS reach,
+				COALESCE(SUM(total_engagement), 0) AS engagement,
+				COALESCE(SUM(ads_conversions), 0) AS conversions
+			FROM `tabMarketing Campaign Insight`
+			WHERE marketing_campaign IN %(names)s
+			  AND granularity IN (%(granularity_day)s, %(granularity_week)s)
+			  AND date BETWEEN %(since)s AND %(until)s
+		""",
+			{
+				"names": tuple(names),
+				"granularity_day": GRANULARITY_DAY,
+				"granularity_week": GRANULARITY_WEEK,
+				"since": prev_since,
+				"until": prev_until,
+			},
+			as_dict=True,
+		)
+		if prev_agg and prev_agg[0]:
+			pa = prev_agg[0]
+			prev_spend = float(pa.get("spend") or 0.0)
+			prev_reach = int(pa.get("reach") or 0)
+			prev_engagement = int(pa.get("engagement") or 0)
+			prev_conversions = int(pa.get("conversions") or 0)
+
 	recent = sorted(rows, key=lambda r: r["modified"], reverse=True)[:5]
 	upcoming = sorted(
 		[
@@ -681,26 +806,42 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 		reverse=True,
 	)[:5]
 
-	leads = leads_total  # for cost_per_lead readability below
+	# If no insight rows exist for period spend, fallback to total_spent when applicable
+	period_spend_for_cpl = spent_this_period if spent_this_period > 0 else total_spent
+	cpl = (period_spend_for_cpl / leads_total) if leads_total else None
+	prev_cpl = (prev_spend / prev_leads_total) if prev_leads_total else None
+
 	kpis = {
 		"total_campaigns": len(rows),
 		"active_campaigns": by_status.get("Active", 0),
+		"paused_campaigns": by_status.get("Paused", 0),
 		"draft_campaigns": by_status.get("Draft", 0),
 		"completed_campaigns": by_status.get("Completed", 0),
 		"total_budget": total_budget,
 		"total_spent": total_spent,
+		"spent_this_period": spent_this_period,
 		"leads_generated": leads_total,
-		# Honest substitute for a fictional "ROI" — there's no revenue
-		# field on this doctype and no Campaign↔Deal link to compute
-		# real ROI from (see plan notes). Cost per lead is real math
-		# on real numbers; null (not 0) when there's no spend or leads
-		# yet so the UI can show "—" instead of a misleading ₹0.
-		"cost_per_lead": (total_spent / leads) if leads else None,
+		"cost_per_lead": cpl,
+		"reach": total_reach,
+		"engagement": total_engagement,
+		"conversions": total_conversions,
+		"lead_goal": lead_goal_sum if lead_goal_sum > 0 else None,
 		"reach_approximate": reach_approximate,
+		"period": period_label,
+		"period_days": p_days,
+		"previous_period": {
+			"spent": prev_spend,
+			"leads": prev_leads_total,
+			"reach": prev_reach,
+			"engagement": prev_engagement,
+			"conversions": prev_conversions,
+			"cost_per_lead": prev_cpl,
+		},
 	}
 
 	return {
-		"days": days,
+		"days": p_days,
+		"period": period_label,
 		"kpis": kpis,
 		"status_distribution": by_status,
 		"channel_distribution": channel_counts,
@@ -710,6 +851,13 @@ def get_campaigns_overview(days: int = 30, filters: dict | None = None) -> dict:
 		"upcoming_campaigns": upcoming,
 		"top_performing_campaigns": [
 			{**r, "leads": leads_by_campaign.get(r["name"], 0)} for r in top_performing
+		],
+		"all_campaigns": [
+			{
+				**r,
+				"leads": leads_by_campaign.get(r["name"], 0),
+			}
+			for r in rows
 		],
 		"reach_approximate": reach_approximate,
 	}

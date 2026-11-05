@@ -16,8 +16,25 @@ from msuite_campaigns.campaign.services import analytics
 
 
 @frappe.whitelist()
-def get_campaigns_overview_dashboard(days: int = 30, filters: str = "{}") -> dict:
+def get_campaigns_overview_dashboard(
+	days: int = 30,
+	filters: str = "{}",
+	period: str | None = None,
+) -> dict:
+	"""Retrieve overview metrics for all campaigns within a time window or period.
+
+	Args:
+		days: Lookback window in days (default 30).
+		filters: JSON-encoded dictionary of filters for Marketing Campaign.
+		period: Named period ('7d', 'mtd'/'month', '90d'/'qtr').
+
+	Returns:
+		dict: Aggregated campaigns overview payload.
+
+	Raises:
+		frappe.PermissionError: If user lacks read permission on Marketing Campaign.
+	"""
 	if not frappe.has_permission("Marketing Campaign", "read"):
 		frappe.throw("Not permitted", frappe.PermissionError)
 	parsed_filters = json.loads(filters or "{}")
-	return analytics.get_campaigns_overview(int(days), parsed_filters)
+	return analytics.get_campaigns_overview(int(days), parsed_filters, period=period)

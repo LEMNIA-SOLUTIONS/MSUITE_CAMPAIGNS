@@ -11,6 +11,10 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - `WEEK`: ISO Monday rollup compacting older daily rows beyond retention cutoff.
 - **Deduplication Patch**: `campaign_compact_insight_rows` backfills deterministic `insight_key` and cleans up duplicate legacy rows.
 - **Metric Catalog & Performance**: Canonical metric catalog definitions and readers without double-counting.
+- **Cross-Campaign Overview & Dashboard**:
+  - `get_campaigns_overview` supports flexible periods (`7d`, `mtd` / `month`, `90d` / `qtr`) with previous-period comparison totals.
+  - Cross-campaign rollup for `reach`, `engagement`, `conversions`, and `paused_campaigns` count.
+  - Code-defined `lead_goal` Int custom field on `Marketing Campaign`, auto-synced via `after_migrate`.
 
 
 ### Installation

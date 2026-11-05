@@ -41,10 +41,20 @@ Reader endpoints query the compacted multi-tier storage model cleanly without do
    - If the window spans into `WEEK` rows, `reach_approximate=True` is attached to `totals`, `summary`, and top-level response; otherwise `reach_approximate=False`.
    - Response shapes are 100% backward compatible with existing frontend consumers.
 
-2. **`get_campaigns_overview(days, filters)`**:
-   - Queries `DAY` and `WEEK` rows across all campaigns in scope for the requested date window.
+2. **`get_campaigns_overview(days, filters, period)`**:
+   - Queries `DAY` and `WEEK` rows across all campaigns in scope for the requested date window or named period (`7d`, `mtd`/`month`, `90d`/`qtr`).
+   - For `mtd`/`month`, calculates month-to-date window and an equal-length previous period before month start for comparative deltas.
+   - Computes cross-campaign sums for `reach` (DAY rows only), `engagement`, and `conversions`.
+   - Returns status breakdown including `paused_campaigns` and sums `lead_goal` across campaigns.
    - Generates daily/weekly `spend_trend` time series without double counting and without including `LIFETIME` rows.
    - Sets `reach_approximate=True` on `kpis` and root response if any `WEEK` rows fall within the queried window.
+
+### Code-Defined Custom Fields
+
+- **`lead_goal` (Int)**:
+  - Custom field on `Marketing Campaign` declared in `msuite_campaigns/setup/campaign_fields.py`.
+  - Idempotently synchronized on `bench migrate` via `after_migrate = "msuite_campaigns.setup.install.after_migrate"`.
+  - Allows campaigns to track target lead acquisition against actual CRM Lead generation.
 
 ### Migrations and Patches
 
