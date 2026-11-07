@@ -29,6 +29,7 @@ from frappe.utils import add_days, add_months, get_datetime, now_datetime
 class MarketingCampaign(Document):
 	def validate(self):
 		self._validate_window()
+		self._validate_amounts()
 		self._backlink_whatsapp()
 		self._normalise_recurrence()
 
@@ -55,6 +56,12 @@ class MarketingCampaign(Document):
 			frappe.throw(_("End date is required."))
 		if get_datetime(self.end_date) <= get_datetime(self.start_date):
 			frappe.throw(_("End date must be after the start date."))
+
+	def _validate_amounts(self) -> None:
+		"""A negative budget or spend skews every dashboard total, so refuse it."""
+		for field in ("budget", "spent"):
+			if (self.get(field) or 0) < 0:
+				frappe.throw(_("{0} must be 0 or more.").format(_(self.meta.get_label(field))))
 
 	def _backlink_whatsapp(self) -> None:
 		"""`whatsapp_blast` is the deprecated single-Link field — kept
