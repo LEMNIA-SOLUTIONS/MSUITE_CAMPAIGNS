@@ -46,6 +46,7 @@ doc_events = {
 	# Each save/delete upserts / removes the Campaign Calendar Event row so
 	# the calendar read path is a single get_all query.
 	"Marketing Campaign": {
+		"before_insert": f"{PE}.enforce_gate",
 		"after_insert": f"{_CCE}.on_source_save",
 		"on_update": f"{_CCE}.on_source_save",
 		"on_trash": f"{_CCE}.on_source_delete",

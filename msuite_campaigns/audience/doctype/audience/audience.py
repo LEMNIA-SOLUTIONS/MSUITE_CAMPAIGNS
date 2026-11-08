@@ -22,6 +22,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
+from msuite_campaigns.audience.plan_gates import check_audience_size_gate
 from msuite_campaigns.audience.services.contact_sync_service import sync_audience_to_contacts
 from msuite_core.services.validation import email as email_validator
 from msuite_core.services.validation import phone as phone_validator
@@ -29,6 +30,7 @@ from msuite_core.services.validation import phone as phone_validator
 
 class Audience(Document):
 	def validate(self):
+		check_audience_size_gate(self)
 		if self.members:
 			sync_audience_to_contacts(self)
 		self.recompute_rollups()
