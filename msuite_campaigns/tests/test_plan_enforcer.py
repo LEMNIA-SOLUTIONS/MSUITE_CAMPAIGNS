@@ -774,8 +774,11 @@ _WA_PRO_SMS_BASIC_PLAN = {
 }
 _SMS_ONLY_PLAN = {
     "plan_name": "SMS Basic",
-    "products": ["SMS"],
-    "features": {"sms_bulk_messaging": {"enabled": True, "limit": None, "label": "Bulk SMS Broadcasts"}},
+    "products": ["SMS", "CAMPAIGNS"],
+    "features": {
+        "sms_bulk_messaging": {"enabled": True, "limit": None, "label": "Bulk SMS Broadcasts"},
+        "campaigns_audiences": {"enabled": True, "limit": None, "label": "Audiences"},
+    },
 }
 _EMAIL_BASIC_PLAN = {
     "plan_name": "Email Basic",
