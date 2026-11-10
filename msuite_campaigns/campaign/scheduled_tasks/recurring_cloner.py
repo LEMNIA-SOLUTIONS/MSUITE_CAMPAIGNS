@@ -98,8 +98,12 @@ def _clone_one_cycle(original_row) -> str:
 	original = frappe.get_doc("Marketing Campaign", original_row.name)
 	cycle_date = now_datetime().strftime("%Y-%m-%d")
 
+	from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
+		make_unique_campaign_name,
+	)
+
 	clone = frappe.copy_doc(original, ignore_no_copy=False)
-	clone.campaign_name = f"{original.campaign_name} — {cycle_date}"
+	clone.campaign_name = make_unique_campaign_name(f"{original.campaign_name} — {cycle_date}")
 	clone.status = "Draft"
 	clone.parent_recurring_campaign = original.name
 	# Don't carry over the recurrence settings — the clone is one
