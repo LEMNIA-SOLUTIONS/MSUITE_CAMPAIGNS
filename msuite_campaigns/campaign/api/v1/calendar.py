@@ -31,7 +31,7 @@ _SOURCE_DATE_FIELDS = {
 	"Social Post": ("Social Post", "scheduled_at", "scheduled_at"),
 	"Ad Campaign": ("Ad Campaign", "start_date", "end_date"),
 	"WhatsApp Message": ("Bulk WhatsApp Message", "scheduled_time", "scheduled_time"),
-	"Task": ("Task", "exp_end_date", "exp_end_date"),
+	"Task": ("CRM Task", "due_date", "due_date"),
 	"Meeting": ("Event", "starts_on", "ends_on"),
 }
 
@@ -143,32 +143,35 @@ def get_calendar_events(
 			pass
 
 	# 2. Fetch Tasks if requested and not scoped to an unrelated campaign
-	if "Task" in valid_types and not campaign and frappe.db.exists("DocType", "Task"):
+	# Same CRM Task list as the Task module; get_list applies the user's permissions.
+	if "Task" in valid_types and not campaign:
 		date_start = from_date[:10]
 		date_end = to_date[:10]
-		tasks = frappe.db.sql(
-			"""
-			SELECT name, subject, description, priority, status, exp_end_date, creation
-			FROM `tabTask`
-			WHERE (exp_end_date >= %(start)s AND exp_end_date <= %(end)s)
-			   OR (exp_end_date IS NULL AND creation >= %(from_dt)s AND creation <= %(to_dt)s)
-			ORDER BY exp_end_date ASC
-			LIMIT 100
-			""",
-			{"start": date_start, "end": date_end, "from_dt": from_date, "to_dt": to_date},
-			as_dict=True,
+		tasks = frappe.get_list(
+			"CRM Task",
+			fields=["name", "title", "description", "priority", "status", "due_date", "creation"],
+			filters=[["status", "!=", "Canceled"]],
+			or_filters=[
+				["due_date", "between", [date_start, f"{date_end} 23:59:59"]],
+				["due_date", "is", "not set"],
+			],
+			order_by="due_date asc",
+			limit=100,
 		)
 		for t in tasks:
-			due_date = str(t.exp_end_date) if t.exp_end_date else str(t.creation)[:10]
+			created = str(t.creation)[:10]
+			if not t.due_date and not (date_start <= created <= date_end):
+				continue
+			due_date = str(t.due_date)[:10] if t.due_date else created
 			start_iso = f"{due_date} 09:00:00"
 			end_iso = f"{due_date} 10:00:00"
-			status_mapped = "Completed" if t.status == "Completed" else "Scheduled"
+			status_mapped = "Completed" if t.status == "Done" else "Scheduled"
 			rows.append(
 				{
 					"name": f"task-{t.name}",
 					"event_type": "Task",
 					"source_name": t.name,
-					"title": t.subject or t.name,
+					"title": t.title or t.name,
 					"status": status_mapped,
 					"campaign": "",
 					"start_date": start_iso,
@@ -239,19 +242,20 @@ def reschedule_event(
 
 	doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
 
-	if doctype == "Task":
-		task = frappe.get_doc("Task", source_name)
-		task.exp_end_date = start_date[:10]
-		task.save(ignore_permissions=True)
+	if doctype == "CRM Task":
+		task = frappe.get_doc("CRM Task", source_name)
+		task.due_date = start_date[:10]
+		task.save()  # the user's own write permission, as in the Task module
+		due = str(task.due_date)[:10]
 		return {
 			"name": f"task-{task.name}",
 			"event_type": "Task",
 			"source_name": task.name,
-			"title": task.subject or task.name,
-			"status": "Completed" if task.status == "Completed" else "Scheduled",
+			"title": task.title or task.name,
+			"status": "Completed" if task.status == "Done" else "Scheduled",
 			"campaign": "",
-			"start_date": f"{task.exp_end_date} 09:00:00",
-			"end_date": f"{task.exp_end_date} 10:00:00",
+			"start_date": f"{due} 09:00:00",
+			"end_date": f"{due} 10:00:00",
 			"platform": "Task",
 			"color_hint": "amber",
 		}

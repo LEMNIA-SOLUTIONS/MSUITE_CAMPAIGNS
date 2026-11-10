@@ -15,6 +15,10 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - `get_campaigns_overview` supports flexible periods (`7d`, `mtd` / `month`, `90d` / `qtr`) with previous-period comparison totals.
   - Cross-campaign rollup for `reach`, `engagement`, `conversions`, and `paused_campaigns` count.
   - Code-defined `lead_goal` Int custom field on `Marketing Campaign`, auto-synced via `after_migrate`.
+- **Plan Limits & Gating (`msuite_plan_gates`)**:
+  - `Marketing Campaign`: Gated by `campaigns_per_month` (product `CAMPAIGNS`, `period="month"`), limiting new campaigns created per calendar month.
+  - `Audience`: Gated by multi-channel feature gate (`bulk_messaging`) and `campaigns_audiences` (product `CAMPAIGNS`, `period="total"`), limiting total active audience lists. Audience member capacity is gated directly on the parent `Audience` by `campaigns_audience_size` (product `CAMPAIGNS`, `period="total"`), counting `members` rows held in document memory to enforce maximum contacts per audience (allowing edits to existing over-cap audiences unless member rows are added).
+  - All gates support 80% proactive warnings on prospective writes, fail-open resiliency, and transitional unenforced bypass when features are not in the active plan payload.
 
 
 ### Installation
