@@ -459,9 +459,13 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 		frappe.throw(_("You do not have permission to create campaigns."), frappe.PermissionError)
 
 	# 1. Copy the Marketing Campaign doc
+	from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
+		make_unique_campaign_name,
+	)
+
 	old_mc = frappe.get_doc("Marketing Campaign", name)
 	new_mc = frappe.copy_doc(old_mc)
-	new_mc.campaign_name = f"{old_mc.campaign_name} (Copy)"
+	new_mc.campaign_name = make_unique_campaign_name(f"{old_mc.campaign_name} (Copy)")
 	new_mc.status = "Draft"
 	new_mc.spent = 0
 	new_mc.next_run_at = None
@@ -722,8 +726,26 @@ def update_campaign_status(name: str, status: str) -> dict:
 	return doc.as_dict()
 
 
+CAMPAIGN_ACTIVITY_LIMIT = 8
+
+
 @frappe.whitelist()
 def get_campaign_activity(campaign: str) -> list:
+	"""Fetch recent audit log (Version rows) for a Marketing Campaign.
+
+	Includes both current 'Marketing Campaign' and legacy 'Campaign'
+	ref_doctype rows. Requires read permission on Marketing Campaign.
+
+	:param campaign: Name of the Marketing Campaign.
+	:return: List of dicts with fields name, owner, creation, data.
+	"""
+	if not frappe.db.exists("Marketing Campaign", campaign):
+		if not frappe.has_permission("Marketing Campaign", "read"):
+			frappe.throw(
+				_("No read permission for Marketing Campaign {0}").format(campaign), frappe.PermissionError
+			)
+		return []
+
 	if not frappe.has_permission("Marketing Campaign", "read", doc=campaign):
 		frappe.throw(
 			_("No read permission for Marketing Campaign {0}").format(campaign), frappe.PermissionError
@@ -731,10 +753,10 @@ def get_campaign_activity(campaign: str) -> list:
 
 	return frappe.get_all(
 		"Version",
-		filters={"ref_doctype": "Marketing Campaign", "docname": campaign},
+		filters={"ref_doctype": ["in", ["Campaign", "Marketing Campaign"]], "docname": campaign},
 		fields=["name", "owner", "creation", "data"],
 		order_by="creation desc",
-		limit=8,
+		limit=CAMPAIGN_ACTIVITY_LIMIT,
 	)
 
 

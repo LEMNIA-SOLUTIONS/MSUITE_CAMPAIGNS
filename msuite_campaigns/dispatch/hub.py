@@ -364,8 +364,12 @@ def _resolve_campaign(payload: dict) -> str:
 			frappe.throw(_("Marketing Campaign {0} not found.").format(existing))
 		return existing
 
+	from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
+		make_unique_campaign_name,
+	)
+
 	doc = frappe.new_doc("Marketing Campaign")
-	doc.campaign_name = payload.get("campaign_name") or f"Campaign {frappe.utils.now()}"
+	doc.campaign_name = make_unique_campaign_name(payload.get("campaign_name") or f"Campaign {frappe.utils.now()}")
 	start = payload.get("start_date") or frappe.utils.now_datetime()
 	if payload.get("start_date") and frappe.utils.get_datetime(payload["start_date"]) > frappe.utils.now_datetime():
 		doc.status = "Scheduled"

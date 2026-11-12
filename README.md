@@ -21,6 +21,11 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - All gates support 80% proactive warnings on prospective writes, fail-open resiliency, and transitional unenforced bypass when features are not in the active plan payload.
 
 
+#### Campaign Validation & Activity (UAT fixes)
+- **Unique names**: a campaign name must be unique (case-insensitive). `make_unique_campaign_name` adds a numeric suffix on automatic paths (duplicate, recurring clone, dispatch hub, agent tools); a manual duplicate name is rejected.
+- **Limits**: budget is `0` to `MAX_CAMPAIGN_BUDGET` (500,000), validated in `marketing_campaign.py` and mirrored in `frontend/src/shared/constants/limits.js`. Name and UTM lengths are capped; UTM values are slugged with `slugify_utm` (lowercase, underscores).
+- **`get_campaign_activity(campaign)`** (`campaign/api/v1/composer.py`): latest `CAMPAIGN_ACTIVITY_LIMIT` (8) activity rows, including legacy `Campaign` references; returns `[]` for a campaign with no history.
+
 ### Installation
 
 You can install this app using the [bench](https://github.com/frappe/bench) CLI:
