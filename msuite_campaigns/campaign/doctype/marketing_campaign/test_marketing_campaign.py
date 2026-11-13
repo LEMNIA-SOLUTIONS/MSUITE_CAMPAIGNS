@@ -5,7 +5,9 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now_datetime
 
-from msuite_campaigns.campaign.api.v1.composer import duplicate_campaign
+from unittest.mock import patch
+
+from msuite_campaigns.campaign.api.v1.composer import check_campaign_name, duplicate_campaign
 from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
 	MAX_CAMPAIGN_BUDGET,
 	make_unique_campaign_name,
@@ -255,3 +257,49 @@ class TestMarketingCampaign(IntegrationTestCase):
 		"""Shared parity table matches expected slug outputs."""
 		for raw, expected in SLUG_PARITY_CASES:
 			self.assertEqual(slugify_utm(raw), expected)
+
+	# ------------------------------------------------------------------
+	# SOC-117: check_campaign_name API endpoint
+	# ------------------------------------------------------------------
+
+	def test_check_campaign_name_duplicate(self):
+		"""Duplicate campaign name returns exists=True."""
+		name = f"TestMC DupeCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=name)
+		res = check_campaign_name(name=name)
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_different_case(self):
+		"""Case-insensitive duplicate returns exists=True."""
+		base = f"TestMC CaseCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=base.lower())
+		res = check_campaign_name(name=base.upper())
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_surrounding_whitespace(self):
+		"""Surrounding whitespace is trimmed before checking and returns exists=True."""
+		base = f"TestMC WsCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=base)
+		res = check_campaign_name(name=f"   {base}   ")
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_empty_or_whitespace_only(self):
+		"""Empty or whitespace-only name returns exists=False."""
+		self.assertEqual(check_campaign_name(name=""), {"exists": False})
+		self.assertEqual(check_campaign_name(name="     "), {"exists": False})
+		self.assertEqual(check_campaign_name(), {"exists": False})
+
+	def test_check_campaign_name_exclude_own_doc(self):
+		"""Excluding own doc name returns exists=False, allowing doc renames."""
+		name = f"TestMC ExcludeCheck {frappe.generate_hash(length=6)}"
+		c = self._create_campaign(campaign_name=name)
+		res = check_campaign_name(name=name, exclude=c.name)
+		self.assertEqual(res, {"exists": False})
+		res_without_exclude = check_campaign_name(name=name)
+		self.assertEqual(res_without_exclude, {"exists": True})
+
+	def test_check_campaign_name_no_permission_denied(self):
+		"""User without read permission on Marketing Campaign raises frappe.PermissionError."""
+		with patch("frappe.has_permission", return_value=False):
+			with self.assertRaises(frappe.PermissionError):
+				check_campaign_name(name="Any Campaign")
