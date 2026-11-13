@@ -10,6 +10,7 @@ the wire.
 Endpoints:
   • get_campaign(name="")     — load full state + counts of children
   • save_campaign(name, payload) — patch the umbrella doctype
+  • check_campaign_name(name, exclude) — is this campaign name already taken?
   • list_channels(campaign)   — Social Posts + Ad Campaigns + Bulk WA
                                 rows linked to this Campaign, with status
 """
@@ -20,6 +21,8 @@ import json
 
 import frappe
 from frappe import _
+
+from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import campaign_name_exists
 
 # ── Load + save ─────────────────────────────────────────────────────────
 
@@ -66,6 +69,27 @@ def save_campaign(name: str = "", payload: str = "") -> dict:
 	else:
 		doc.save(ignore_permissions=True)
 	return _serialize(doc)
+
+
+@frappe.whitelist()
+def check_campaign_name(name: str = "", exclude: str = "") -> dict:
+	"""Tell the composer whether a campaign name is already taken, so the
+	drawer can warn before the user submits. Same trimmed, case-insensitive
+	rule that `save_campaign` enforces, which stays the final guard.
+
+	Args:
+		name: Campaign name typed by the user.
+		exclude: Optional Marketing Campaign id to ignore (the campaign being renamed).
+
+	Returns:
+		dict: `{"exists": bool}`; False for an empty or whitespace-only name.
+
+	Raises:
+		frappe.PermissionError: If the user cannot read Marketing Campaign.
+	"""
+	if not frappe.has_permission("Marketing Campaign", "read"):
+		frappe.throw(_("No read permission for Marketing Campaign"), frappe.PermissionError)
+	return {"exists": campaign_name_exists(name, exclude_name=exclude or None)}
 
 
 # ── Children ────────────────────────────────────────────────────────────

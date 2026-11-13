@@ -9,6 +9,7 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - `LIFETIME`: Single row per campaign using deterministic `insight_key` upserts.
   - `DAY`: Bounded 7-day refresh window for active campaign metrics.
   - `WEEK`: ISO Monday rollup compacting older daily rows beyond retention cutoff.
+- **Indexed name lookup**: `campaign_name` has a search index and `campaign_name_exists` compares the bare column (case and trailing-space insensitivity come from the `utf8mb4_unicode_ci` collation, which also ignores accents). The `trim_campaign_names` patch trims legacy padded names and skips, and logs via `frappe.log_error`, any row whose trimmed name would collide.
 - **Deduplication Patch**: `campaign_compact_insight_rows` backfills deterministic `insight_key` and cleans up duplicate legacy rows.
 - **Metric Catalog & Performance**: Canonical metric catalog definitions and readers without double-counting.
 - **Cross-Campaign Overview & Dashboard**:
@@ -22,9 +23,10 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
 
 
 #### Campaign Validation & Activity (UAT fixes)
-- **Unique names**: a campaign name must be unique (case-insensitive). `make_unique_campaign_name` adds a numeric suffix on automatic paths (duplicate, recurring clone, dispatch hub, agent tools); a manual duplicate name is rejected.
+- **Unique names**: a campaign name must be unique (case-insensitive). `make_unique_campaign_name` adds a numeric suffix on automatic paths (duplicate, recurring clone, dispatch hub, agent tools); a manual duplicate name is rejected with `CampaignNameExistsError` (HTTP 409; clients match the status because the site's response sanitizer removes `exc_type`).
 - **Limits**: budget is `0` to `MAX_CAMPAIGN_BUDGET` (500,000), validated in `marketing_campaign.py` and mirrored in `frontend/src/shared/constants/limits.js`. Name and UTM lengths are capped; UTM values are slugged with `slugify_utm` (lowercase, underscores).
 - **`get_campaign_activity(campaign)`** (`campaign/api/v1/composer.py`): latest `CAMPAIGN_ACTIVITY_LIMIT` (8) activity rows, including legacy `Campaign` references; returns `[]` for a campaign with no history.
+- **`check_campaign_name(name, exclude="")`** (`campaign/api/v1/composer.py`): returns `{"exists": bool}` for a campaign name using the same trimmed, case-insensitive rule as the save-time check (`campaign_name_exists`). `exclude` is the campaign id being renamed. Empty or blank names return `exists: false`. Needs read permission on Marketing Campaign. The Create campaign drawer calls it while the user types; `save_campaign` stays the final guard.
 
 ### Installation
 

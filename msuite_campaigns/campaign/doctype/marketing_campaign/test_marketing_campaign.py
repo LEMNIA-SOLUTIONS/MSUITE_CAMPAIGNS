@@ -5,9 +5,13 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now_datetime
 
-from msuite_campaigns.campaign.api.v1.composer import duplicate_campaign
+from unittest.mock import patch
+
+from msuite_campaigns.campaign.api.v1.composer import check_campaign_name, duplicate_campaign
 from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
 	MAX_CAMPAIGN_BUDGET,
+	CampaignNameExistsError,
+	campaign_name_exists,
 	make_unique_campaign_name,
 	slugify_utm,
 )
@@ -68,6 +72,17 @@ class TestMarketingCampaign(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError) as cm:
 			self._create_campaign(campaign_name=name)
 		self.assertIn("A campaign with this name already exists", str(cm.exception))
+
+	def test_duplicate_raises_campaign_name_exists_error(self):
+		"""A duplicate is raised as the typed error so clients match on HTTP 409, not text."""
+		name = f"TestMC Typed {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=name)
+
+		with self.assertRaises(CampaignNameExistsError) as cm:
+			self._create_campaign(campaign_name=name)
+		self.assertIn("A campaign with this name already exists", str(cm.exception))
+		self.assertIsInstance(cm.exception, frappe.ValidationError)
+		self.assertEqual(CampaignNameExistsError.http_status_code, 409)
 
 	def test_duplicate_name_differing_by_case_rejected(self):
 		"""Case-insensitive duplicate campaign name is rejected."""
@@ -255,3 +270,121 @@ class TestMarketingCampaign(IntegrationTestCase):
 		"""Shared parity table matches expected slug outputs."""
 		for raw, expected in SLUG_PARITY_CASES:
 			self.assertEqual(slugify_utm(raw), expected)
+
+	# ------------------------------------------------------------------
+	# SOC-117: check_campaign_name API endpoint
+	# ------------------------------------------------------------------
+
+	def test_check_campaign_name_duplicate(self):
+		"""Duplicate campaign name returns exists=True."""
+		name = f"TestMC DupeCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=name)
+		res = check_campaign_name(name=name)
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_different_case(self):
+		"""Case-insensitive duplicate returns exists=True."""
+		base = f"TestMC CaseCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=base.lower())
+		res = check_campaign_name(name=base.upper())
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_surrounding_whitespace(self):
+		"""Surrounding whitespace is trimmed before checking and returns exists=True."""
+		base = f"TestMC WsCheck {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=base)
+		res = check_campaign_name(name=f"   {base}   ")
+		self.assertEqual(res, {"exists": True})
+
+	def test_check_campaign_name_empty_or_whitespace_only(self):
+		"""Empty or whitespace-only name returns exists=False."""
+		self.assertEqual(check_campaign_name(name=""), {"exists": False})
+		self.assertEqual(check_campaign_name(name="     "), {"exists": False})
+		self.assertEqual(check_campaign_name(), {"exists": False})
+
+	def test_check_campaign_name_exclude_own_doc(self):
+		"""Excluding own doc name returns exists=False, allowing doc renames."""
+		name = f"TestMC ExcludeCheck {frappe.generate_hash(length=6)}"
+		c = self._create_campaign(campaign_name=name)
+		res = check_campaign_name(name=name, exclude=c.name)
+		self.assertEqual(res, {"exists": False})
+		res_without_exclude = check_campaign_name(name=name)
+		self.assertEqual(res_without_exclude, {"exists": True})
+
+	def test_check_campaign_name_no_permission_denied(self):
+		"""User without read permission on Marketing Campaign raises frappe.PermissionError."""
+		with patch("frappe.has_permission", return_value=False):
+			with self.assertRaises(frappe.PermissionError):
+				check_campaign_name(name="Any Campaign")
+
+	# ------------------------------------------------------------------
+	# Indexed name lookup (no LOWER/TRIM on the column) + trim patch
+	# ------------------------------------------------------------------
+
+	def test_campaign_name_exists_parametrised(self):
+		"""Case, padding, prefix, exclude and blank inputs keep their results."""
+		base = f"TestMC Lookup {frappe.generate_hash(length=6)}"
+		doc = self._create_campaign(campaign_name=base)
+		cases = [
+			(base, None, True),
+			(base.upper(), None, True),
+			(base.lower(), None, True),
+			(f"  {base}  ", None, True),
+			(base[:-1], None, False),  # shared prefix, different name
+			(f"{base} extra", None, False),
+			(base, doc.name, False),  # excluding itself
+			(base, "some-other-doc", True),
+			("", None, False),
+			("   ", None, False),
+			(None, None, False),
+		]
+		for name, exclude, expected in cases:
+			with self.subTest(name=name, exclude=exclude):
+				self.assertEqual(campaign_name_exists(name, exclude_name=exclude), expected)
+
+	def test_campaign_name_exists_query_does_not_wrap_column(self):
+		"""The lookup must compare the bare column so the index is usable."""
+		real_sql = frappe.db.sql
+		seen = []
+
+		def spy(query, *args, **kwargs):
+			seen.append(query)
+			return real_sql(query, *args, **kwargs)
+
+		with patch.object(frappe.db, "sql", side_effect=spy):
+			campaign_name_exists("TestMC anything")
+			campaign_name_exists("TestMC anything", exclude_name="x")
+		self.assertEqual(len(seen), 2)
+		for query in seen:
+			self.assertNotIn("LOWER(", query.upper())
+			self.assertNotIn("TRIM(", query.upper())
+
+	def test_trim_patch_trims_legacy_rows_and_skips_collisions(self):
+		"""Patch trims leading- and trailing-padded rows, skips collisions, is idempotent."""
+		from msuite_campaigns.patches import trim_campaign_names
+
+		tag = frappe.generate_hash(length=6)
+
+		def make(label, stored):
+			doc = self._create_campaign(campaign_name=f"TestMC {label} {tag}")
+			# bypass validation to simulate a legacy untrimmed row
+			frappe.db.set_value("Marketing Campaign", doc.name, "campaign_name", stored, update_modified=False)
+			return doc.name
+
+		lead = make("Lead", f"  TestMC Lead {tag}")
+		trail = make("Trail", f"TestMC Trail {tag}   ")  # trailing-only, no collision
+		owner = make("Owner", f"TestMC Owner {tag}")
+		lead_clash = make("LeadClash", f"  TestMC Owner {tag}")  # leading pad collides with owner
+		own2 = make("Owner2", f"TestMC Owner2 {tag}")
+		trail_clash = make("TrailClash", f"TestMC Owner2 {tag}  ")  # trailing-only collision
+
+		for _ in range(2):  # second run proves idempotency
+			trim_campaign_names.execute()
+			get = lambda n: frappe.db.get_value("Marketing Campaign", n, "campaign_name")
+			self.assertEqual(len(get(trail)), len(f"TestMC Trail {tag}"))
+			self.assertEqual(get(lead), f"TestMC Lead {tag}")
+			self.assertEqual(get(owner), f"TestMC Owner {tag}")
+			self.assertEqual(get(own2), f"TestMC Owner2 {tag}")
+			# collisions: left untouched, not merged or renamed
+			self.assertEqual(get(lead_clash), f"  TestMC Owner {tag}")
+			self.assertEqual(len(get(trail_clash)), len(f"TestMC Owner2 {tag}  "))

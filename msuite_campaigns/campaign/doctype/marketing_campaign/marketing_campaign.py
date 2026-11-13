@@ -31,6 +31,16 @@ from frappe.utils import add_days, add_months, flt, get_datetime, now_datetime
 MAX_CAMPAIGN_BUDGET = 500_000
 
 
+class CampaignNameExistsError(frappe.ValidationError):
+	"""Raised when a campaign name is already taken.
+
+	Answers with HTTP 409 so clients recognise it by status, not by message text
+	(the site's response sanitizer strips exc_type from API errors).
+	"""
+
+	http_status_code = 409
+
+
 def _get_field_max_length(doctype: str, fieldname: str) -> int:
 	"""Derive the character limit for a field from docfield meta or frappe.db.VARCHAR_LEN.
 
@@ -68,6 +78,11 @@ def slugify_utm(text: str | None, max_len: int | None = None) -> str:
 def campaign_name_exists(name: str, exclude_name: str | None = None) -> bool:
 	"""Check if any Marketing Campaign exists with the same name (trimmed, case-insensitive).
 
+	Compares the bare `campaign_name` column so the search index is used. Case and
+	trailing-space insensitivity come from the column collation (utf8mb4_unicode_ci,
+	which is also accent-insensitive). Stored names are kept trimmed by
+	`_validate_unique_name` and the `trim_campaign_names` patch.
+
 	Args:
 		name: Campaign name to check.
 		exclude_name: Optional doc name (id) to exclude (for update checks).
@@ -78,19 +93,12 @@ def campaign_name_exists(name: str, exclude_name: str | None = None) -> bool:
 	trimmed = (name or "").strip()
 	if not trimmed:
 		return False
+	query = "SELECT 1 FROM `tabMarketing Campaign` WHERE campaign_name = %s"
+	params: tuple = (trimmed,)
 	if exclude_name:
-		return bool(
-			frappe.db.sql(
-				"SELECT 1 FROM `tabMarketing Campaign` WHERE LOWER(TRIM(campaign_name)) = LOWER(%s) AND name != %s LIMIT 1",
-				(trimmed, exclude_name),
-			)
-		)
-	return bool(
-		frappe.db.sql(
-			"SELECT 1 FROM `tabMarketing Campaign` WHERE LOWER(TRIM(campaign_name)) = LOWER(%s) LIMIT 1",
-			(trimmed,),
-		)
-	)
+		query += " AND name != %s"
+		params += (exclude_name,)
+	return bool(frappe.db.sql(f"{query} LIMIT 1", params))
 
 
 def make_unique_campaign_name(base: str, exclude_name: str | None = None) -> str:
@@ -184,7 +192,9 @@ class MarketingCampaign(Document):
 					frappe.throw(_("{0} cannot exceed {1} characters.").format(label, max_len))
 
 	def _validate_unique_name(self) -> None:
-		"""Ensure campaign_name is unique (trimmed, case-insensitive) across all campaigns."""
+		"""Ensure campaign_name is unique (trimmed, case-insensitive) across all campaigns.
+
+		Raises CampaignNameExistsError (a ValidationError) on a duplicate."""
 		trimmed = (self.campaign_name or "").strip()
 		if not trimmed:
 			frappe.throw(_("Campaign Name is required."))
@@ -192,7 +202,7 @@ class MarketingCampaign(Document):
 
 		exclude_name = None if self.is_new() else self.name
 		if campaign_name_exists(self.campaign_name, exclude_name=exclude_name):
-			frappe.throw(_("A campaign with this name already exists"))
+			frappe.throw(_("A campaign with this name already exists"), exc=CampaignNameExistsError)
 
 	def _validate_window(self) -> None:
 		"""Campaign drives the schedule window for every child channel —
