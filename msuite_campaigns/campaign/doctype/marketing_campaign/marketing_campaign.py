@@ -31,6 +31,16 @@ from frappe.utils import add_days, add_months, flt, get_datetime, now_datetime
 MAX_CAMPAIGN_BUDGET = 500_000
 
 
+class CampaignNameExistsError(frappe.ValidationError):
+	"""Raised when a campaign name is already taken.
+
+	Answers with HTTP 409 so clients recognise it by status, not by message text
+	(the site's response sanitizer strips exc_type from API errors).
+	"""
+
+	http_status_code = 409
+
+
 def _get_field_max_length(doctype: str, fieldname: str) -> int:
 	"""Derive the character limit for a field from docfield meta or frappe.db.VARCHAR_LEN.
 
@@ -184,7 +194,9 @@ class MarketingCampaign(Document):
 					frappe.throw(_("{0} cannot exceed {1} characters.").format(label, max_len))
 
 	def _validate_unique_name(self) -> None:
-		"""Ensure campaign_name is unique (trimmed, case-insensitive) across all campaigns."""
+		"""Ensure campaign_name is unique (trimmed, case-insensitive) across all campaigns.
+
+		Raises CampaignNameExistsError (a ValidationError) on a duplicate."""
 		trimmed = (self.campaign_name or "").strip()
 		if not trimmed:
 			frappe.throw(_("Campaign Name is required."))
@@ -192,7 +204,7 @@ class MarketingCampaign(Document):
 
 		exclude_name = None if self.is_new() else self.name
 		if campaign_name_exists(self.campaign_name, exclude_name=exclude_name):
-			frappe.throw(_("A campaign with this name already exists"))
+			frappe.throw(_("A campaign with this name already exists"), exc=CampaignNameExistsError)
 
 	def _validate_window(self) -> None:
 		"""Campaign drives the schedule window for every child channel —

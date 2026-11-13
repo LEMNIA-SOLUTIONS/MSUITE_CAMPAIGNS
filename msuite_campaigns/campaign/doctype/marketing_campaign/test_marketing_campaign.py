@@ -10,6 +10,7 @@ from unittest.mock import patch
 from msuite_campaigns.campaign.api.v1.composer import check_campaign_name, duplicate_campaign
 from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
 	MAX_CAMPAIGN_BUDGET,
+	CampaignNameExistsError,
 	make_unique_campaign_name,
 	slugify_utm,
 )
@@ -70,6 +71,17 @@ class TestMarketingCampaign(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError) as cm:
 			self._create_campaign(campaign_name=name)
 		self.assertIn("A campaign with this name already exists", str(cm.exception))
+
+	def test_duplicate_raises_campaign_name_exists_error(self):
+		"""A duplicate is raised as the typed error so clients match on HTTP 409, not text."""
+		name = f"TestMC Typed {frappe.generate_hash(length=6)}"
+		self._create_campaign(campaign_name=name)
+
+		with self.assertRaises(CampaignNameExistsError) as cm:
+			self._create_campaign(campaign_name=name)
+		self.assertIn("A campaign with this name already exists", str(cm.exception))
+		self.assertIsInstance(cm.exception, frappe.ValidationError)
+		self.assertEqual(CampaignNameExistsError.http_status_code, 409)
 
 	def test_duplicate_name_differing_by_case_rejected(self):
 		"""Case-insensitive duplicate campaign name is rejected."""
