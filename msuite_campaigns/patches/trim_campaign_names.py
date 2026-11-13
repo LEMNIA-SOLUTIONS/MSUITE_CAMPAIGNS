@@ -21,7 +21,7 @@ def execute() -> None:
 		logs each skipped collision with `frappe.log_error`.
 	"""
 	rows = frappe.db.sql(
-		"SELECT name, campaign_name FROM `tabMarketing Campaign` WHERE campaign_name != TRIM(campaign_name)",
+		"SELECT name, campaign_name FROM `tabMarketing Campaign` WHERE LENGTH(campaign_name) != LENGTH(TRIM(campaign_name))",
 		as_dict=True,
 	)
 	for row in rows:

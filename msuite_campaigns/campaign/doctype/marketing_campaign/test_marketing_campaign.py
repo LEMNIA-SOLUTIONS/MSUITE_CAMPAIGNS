@@ -360,20 +360,31 @@ class TestMarketingCampaign(IntegrationTestCase):
 			self.assertNotIn("TRIM(", query.upper())
 
 	def test_trim_patch_trims_legacy_rows_and_skips_collisions(self):
-		"""Patch trims padded names, is idempotent, never renames on a collision."""
+		"""Patch trims leading- and trailing-padded rows, skips collisions, is idempotent."""
 		from msuite_campaigns.patches import trim_campaign_names
 
 		tag = frappe.generate_hash(length=6)
-		legacy = self._create_campaign(campaign_name=f"TestMC Legacy {tag}")
-		clash_owner = self._create_campaign(campaign_name=f"TestMC Clash {tag}")
-		clash_padded = self._create_campaign(campaign_name=f"TestMC ClashOther {tag}")
-		frappe.db.set_value("Marketing Campaign", legacy.name, "campaign_name", f"  TestMC Legacy {tag}  ", update_modified=False)
-		frappe.db.set_value("Marketing Campaign", clash_padded.name, "campaign_name", f"TestMC Clash {tag}  ", update_modified=False)
 
-		trim_campaign_names.execute()
-		trim_campaign_names.execute()  # idempotent
+		def make(label, stored):
+			doc = self._create_campaign(campaign_name=f"TestMC {label} {tag}")
+			# bypass validation to simulate a legacy untrimmed row
+			frappe.db.set_value("Marketing Campaign", doc.name, "campaign_name", stored, update_modified=False)
+			return doc.name
 
-		self.assertEqual(frappe.db.get_value("Marketing Campaign", legacy.name, "campaign_name"), f"TestMC Legacy {tag}")
-		self.assertEqual(frappe.db.get_value("Marketing Campaign", clash_owner.name, "campaign_name"), f"TestMC Clash {tag}")
-		# collision: left untouched, not merged or renamed
-		self.assertEqual(frappe.db.get_value("Marketing Campaign", clash_padded.name, "campaign_name"), f"TestMC Clash {tag}  ")
+		lead = make("Lead", f"  TestMC Lead {tag}")
+		trail = make("Trail", f"TestMC Trail {tag}   ")  # trailing-only, no collision
+		owner = make("Owner", f"TestMC Owner {tag}")
+		lead_clash = make("LeadClash", f"  TestMC Owner {tag}")  # leading pad collides with owner
+		own2 = make("Owner2", f"TestMC Owner2 {tag}")
+		trail_clash = make("TrailClash", f"TestMC Owner2 {tag}  ")  # trailing-only collision
+
+		for _ in range(2):  # second run proves idempotency
+			trim_campaign_names.execute()
+			get = lambda n: frappe.db.get_value("Marketing Campaign", n, "campaign_name")
+			self.assertEqual(len(get(trail)), len(f"TestMC Trail {tag}"))
+			self.assertEqual(get(lead), f"TestMC Lead {tag}")
+			self.assertEqual(get(owner), f"TestMC Owner {tag}")
+			self.assertEqual(get(own2), f"TestMC Owner2 {tag}")
+			# collisions: left untouched, not merged or renamed
+			self.assertEqual(get(lead_clash), f"  TestMC Owner {tag}")
+			self.assertEqual(len(get(trail_clash)), len(f"TestMC Owner2 {tag}  "))
