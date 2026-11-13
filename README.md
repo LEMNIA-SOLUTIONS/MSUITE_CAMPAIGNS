@@ -9,6 +9,7 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - `LIFETIME`: Single row per campaign using deterministic `insight_key` upserts.
   - `DAY`: Bounded 7-day refresh window for active campaign metrics.
   - `WEEK`: ISO Monday rollup compacting older daily rows beyond retention cutoff.
+- **Indexed name lookup**: `campaign_name` has a search index and `campaign_name_exists` compares the bare column (case and trailing-space insensitivity come from the `utf8mb4_unicode_ci` collation, which also ignores accents). The `trim_campaign_names` patch trims legacy padded names and skips, and logs via `frappe.log_error`, any row whose trimmed name would collide.
 - **Deduplication Patch**: `campaign_compact_insight_rows` backfills deterministic `insight_key` and cleans up duplicate legacy rows.
 - **Metric Catalog & Performance**: Canonical metric catalog definitions and readers without double-counting.
 - **Cross-Campaign Overview & Dashboard**:

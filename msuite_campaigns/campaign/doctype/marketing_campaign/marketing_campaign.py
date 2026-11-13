@@ -78,6 +78,11 @@ def slugify_utm(text: str | None, max_len: int | None = None) -> str:
 def campaign_name_exists(name: str, exclude_name: str | None = None) -> bool:
 	"""Check if any Marketing Campaign exists with the same name (trimmed, case-insensitive).
 
+	Compares the bare `campaign_name` column so the search index is used. Case and
+	trailing-space insensitivity come from the column collation (utf8mb4_unicode_ci,
+	which is also accent-insensitive). Stored names are kept trimmed by
+	`_validate_unique_name` and the `trim_campaign_names` patch.
+
 	Args:
 		name: Campaign name to check.
 		exclude_name: Optional doc name (id) to exclude (for update checks).
@@ -88,19 +93,12 @@ def campaign_name_exists(name: str, exclude_name: str | None = None) -> bool:
 	trimmed = (name or "").strip()
 	if not trimmed:
 		return False
+	query = "SELECT 1 FROM `tabMarketing Campaign` WHERE campaign_name = %s"
+	params: tuple = (trimmed,)
 	if exclude_name:
-		return bool(
-			frappe.db.sql(
-				"SELECT 1 FROM `tabMarketing Campaign` WHERE LOWER(TRIM(campaign_name)) = LOWER(%s) AND name != %s LIMIT 1",
-				(trimmed, exclude_name),
-			)
-		)
-	return bool(
-		frappe.db.sql(
-			"SELECT 1 FROM `tabMarketing Campaign` WHERE LOWER(TRIM(campaign_name)) = LOWER(%s) LIMIT 1",
-			(trimmed,),
-		)
-	)
+		query += " AND name != %s"
+		params += (exclude_name,)
+	return bool(frappe.db.sql(f"{query} LIMIT 1", params))
 
 
 def make_unique_campaign_name(base: str, exclude_name: str | None = None) -> str:

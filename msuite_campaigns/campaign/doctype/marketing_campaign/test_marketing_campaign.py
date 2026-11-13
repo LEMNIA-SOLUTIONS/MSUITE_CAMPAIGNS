@@ -11,6 +11,7 @@ from msuite_campaigns.campaign.api.v1.composer import check_campaign_name, dupli
 from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
 	MAX_CAMPAIGN_BUDGET,
 	CampaignNameExistsError,
+	campaign_name_exists,
 	make_unique_campaign_name,
 	slugify_utm,
 )
@@ -315,3 +316,64 @@ class TestMarketingCampaign(IntegrationTestCase):
 		with patch("frappe.has_permission", return_value=False):
 			with self.assertRaises(frappe.PermissionError):
 				check_campaign_name(name="Any Campaign")
+
+	# ------------------------------------------------------------------
+	# Indexed name lookup (no LOWER/TRIM on the column) + trim patch
+	# ------------------------------------------------------------------
+
+	def test_campaign_name_exists_parametrised(self):
+		"""Case, padding, prefix, exclude and blank inputs keep their results."""
+		base = f"TestMC Lookup {frappe.generate_hash(length=6)}"
+		doc = self._create_campaign(campaign_name=base)
+		cases = [
+			(base, None, True),
+			(base.upper(), None, True),
+			(base.lower(), None, True),
+			(f"  {base}  ", None, True),
+			(base[:-1], None, False),  # shared prefix, different name
+			(f"{base} extra", None, False),
+			(base, doc.name, False),  # excluding itself
+			(base, "some-other-doc", True),
+			("", None, False),
+			("   ", None, False),
+			(None, None, False),
+		]
+		for name, exclude, expected in cases:
+			with self.subTest(name=name, exclude=exclude):
+				self.assertEqual(campaign_name_exists(name, exclude_name=exclude), expected)
+
+	def test_campaign_name_exists_query_does_not_wrap_column(self):
+		"""The lookup must compare the bare column so the index is usable."""
+		real_sql = frappe.db.sql
+		seen = []
+
+		def spy(query, *args, **kwargs):
+			seen.append(query)
+			return real_sql(query, *args, **kwargs)
+
+		with patch.object(frappe.db, "sql", side_effect=spy):
+			campaign_name_exists("TestMC anything")
+			campaign_name_exists("TestMC anything", exclude_name="x")
+		self.assertEqual(len(seen), 2)
+		for query in seen:
+			self.assertNotIn("LOWER(", query.upper())
+			self.assertNotIn("TRIM(", query.upper())
+
+	def test_trim_patch_trims_legacy_rows_and_skips_collisions(self):
+		"""Patch trims padded names, is idempotent, never renames on a collision."""
+		from msuite_campaigns.patches import trim_campaign_names
+
+		tag = frappe.generate_hash(length=6)
+		legacy = self._create_campaign(campaign_name=f"TestMC Legacy {tag}")
+		clash_owner = self._create_campaign(campaign_name=f"TestMC Clash {tag}")
+		clash_padded = self._create_campaign(campaign_name=f"TestMC ClashOther {tag}")
+		frappe.db.set_value("Marketing Campaign", legacy.name, "campaign_name", f"  TestMC Legacy {tag}  ", update_modified=False)
+		frappe.db.set_value("Marketing Campaign", clash_padded.name, "campaign_name", f"TestMC Clash {tag}  ", update_modified=False)
+
+		trim_campaign_names.execute()
+		trim_campaign_names.execute()  # idempotent
+
+		self.assertEqual(frappe.db.get_value("Marketing Campaign", legacy.name, "campaign_name"), f"TestMC Legacy {tag}")
+		self.assertEqual(frappe.db.get_value("Marketing Campaign", clash_owner.name, "campaign_name"), f"TestMC Clash {tag}")
+		# collision: left untouched, not merged or renamed
+		self.assertEqual(frappe.db.get_value("Marketing Campaign", clash_padded.name, "campaign_name"), f"TestMC Clash {tag}  ")
