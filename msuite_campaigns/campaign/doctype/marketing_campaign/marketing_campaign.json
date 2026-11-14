@@ -70,7 +70,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Campaign Name",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "objective",

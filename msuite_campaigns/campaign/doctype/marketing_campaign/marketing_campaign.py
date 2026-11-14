@@ -20,15 +20,140 @@ posts), and advances `next_run_at` to the next slot — capped by
 
 from __future__ import annotations
 
+import re
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import add_days, add_months, get_datetime, now_datetime
+from frappe.utils import add_days, add_months, flt, get_datetime, now_datetime
+
+# Maximum allowed budget for a Marketing Campaign (owner: 5 lakh).
+MAX_CAMPAIGN_BUDGET = 500_000
+
+
+class CampaignNameExistsError(frappe.ValidationError):
+	"""Raised when a campaign name is already taken.
+
+	Answers with HTTP 409 so clients recognise it by status, not by message text
+	(the site's response sanitizer strips exc_type from API errors).
+	"""
+
+	http_status_code = 409
+
+
+def _get_field_max_length(doctype: str, fieldname: str) -> int:
+	"""Derive the character limit for a field from docfield meta or frappe.db.VARCHAR_LEN.
+
+	Args:
+		doctype: DocType name (e.g. 'Marketing Campaign').
+		fieldname: Fieldname to check.
+
+	Returns:
+		int: Maximum character length allowed for this field.
+	"""
+	df = frappe.get_meta(doctype).get_field(fieldname)
+	length = df.length if df else 0
+	return length or getattr(frappe.db, "VARCHAR_LEN", 140)
+
+
+def slugify_utm(text: str | None, max_len: int | None = None) -> str:
+	"""Convert text to URL-safe UTM parameter: lowercase, non-alphanumeric runs to single underscore,
+	trim leading/trailing underscores, cap at field length.
+
+	Args:
+		text: Input string to convert to slug.
+		max_len: Optional max length cap (defaults to utm_campaign field length / VARCHAR_LEN).
+
+	Returns:
+		str: Slugified UTM string capped at max_len.
+	"""
+	if text is None:
+		return ""
+	if max_len is None:
+		max_len = _get_field_max_length("Marketing Campaign", "utm_campaign")
+	s = re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_")
+	return s[:max_len]
+
+
+def campaign_name_exists(name: str, exclude_name: str | None = None) -> bool:
+	"""Check if any Marketing Campaign exists with the same name (trimmed, case-insensitive).
+
+	Compares the bare `campaign_name` column so the search index is used. Case and
+	trailing-space insensitivity come from the column collation (utf8mb4_unicode_ci,
+	which is also accent-insensitive). Stored names are kept trimmed by
+	`_validate_unique_name` and the `trim_campaign_names` patch.
+
+	Args:
+		name: Campaign name to check.
+		exclude_name: Optional doc name (id) to exclude (for update checks).
+
+	Returns:
+		bool: True if another campaign exists with this trimmed, case-insensitive name.
+	"""
+	trimmed = (name or "").strip()
+	if not trimmed:
+		return False
+	query = "SELECT 1 FROM `tabMarketing Campaign` WHERE campaign_name = %s"
+	params: tuple = (trimmed,)
+	if exclude_name:
+		query += " AND name != %s"
+		params += (exclude_name,)
+	return bool(frappe.db.sql(f"{query} LIMIT 1", params))
+
+
+def make_unique_campaign_name(base: str, exclude_name: str | None = None) -> str:
+	"""Generate a unique campaign name by appending a suffix until unique, capping at max length.
+
+	Suffixing rules:
+	- If base ends with '(Copy)' or '(Copy N)', continues with '(Copy 2)', '(Copy 3)', ...
+	- Otherwise, tries base, then '<base> (2)', '<base> (3)', ...
+	- Truncates base (not suffix) to fit within the field's varchar length (140).
+
+	Args:
+		base: Starting campaign name string.
+		exclude_name: Optional campaign document name to exclude from existence checks.
+
+	Returns:
+		str: Unique campaign name adhering to length and uniqueness limits.
+	"""
+	max_len = _get_field_max_length("Marketing Campaign", "campaign_name")
+	trimmed = (base or "").strip()
+
+	copy_match = re.match(r"^(.*?)\s*\(Copy(?:\s*(\d+))?\)$", trimmed, flags=re.IGNORECASE)
+	if copy_match:
+		root = copy_match.group(1).strip()
+		num_str = copy_match.group(2)
+		start_num = int(num_str) if num_str else 1
+
+		counter = start_num
+		while True:
+			suffix = " (Copy)" if counter == 1 else f" (Copy {counter})"
+			max_root_len = max(1, max_len - len(suffix))
+			candidate = f"{root[:max_root_len]}{suffix}"
+			if not campaign_name_exists(candidate, exclude_name=exclude_name):
+				return candidate
+			counter += 1
+	else:
+		candidate = trimmed[:max_len]
+		if not campaign_name_exists(candidate, exclude_name=exclude_name):
+			return candidate
+
+		counter = 2
+		while True:
+			suffix = f" ({counter})"
+			max_root_len = max(1, max_len - len(suffix))
+			candidate = f"{trimmed[:max_root_len]}{suffix}"
+			if not campaign_name_exists(candidate, exclude_name=exclude_name):
+				return candidate
+			counter += 1
 
 
 class MarketingCampaign(Document):
 	def validate(self):
 		self._validate_window()
+		self._slugify_utm_fields()
+		self._validate_name_and_utm_lengths()
+		self._validate_unique_name()
 		self._validate_amounts()
 		self._backlink_whatsapp()
 		self._normalise_recurrence()
@@ -44,6 +169,41 @@ class MarketingCampaign(Document):
 
 		emit(CampaignEvent.CREATED, self.name, status=self.status)
 
+	def _slugify_utm_fields(self) -> None:
+		"""Auto-slug UTM parameters: lowercase, non-alphanumeric runs to single underscore,
+		trim leading/trailing underscores, capped at field length.
+		"""
+		for field in ("utm_campaign", "utm_term", "utm_source", "utm_medium"):
+			val = self.get(field)
+			if val:
+				self.set(field, slugify_utm(val))
+
+	def _validate_name_and_utm_lengths(self) -> None:
+		"""Validate field lengths with a short plain message that does not echo the value,
+		running before Frappe's generic _validate_length.
+		"""
+		for field in ("campaign_name", "utm_campaign", "utm_term"):
+			val = self.get(field)
+			if val:
+				max_len = _get_field_max_length(self.doctype, field)
+				if len(str(val)) > max_len:
+					df = self.meta.get_field(field)
+					label = _(df.label) if df else field
+					frappe.throw(_("{0} cannot exceed {1} characters.").format(label, max_len))
+
+	def _validate_unique_name(self) -> None:
+		"""Ensure campaign_name is unique (trimmed, case-insensitive) across all campaigns.
+
+		Raises CampaignNameExistsError (a ValidationError) on a duplicate."""
+		trimmed = (self.campaign_name or "").strip()
+		if not trimmed:
+			frappe.throw(_("Campaign Name is required."))
+		self.campaign_name = trimmed
+
+		exclude_name = None if self.is_new() else self.name
+		if campaign_name_exists(self.campaign_name, exclude_name=exclude_name):
+			frappe.throw(_("A campaign with this name already exists"), exc=CampaignNameExistsError)
+
 	def _validate_window(self) -> None:
 		"""Campaign drives the schedule window for every child channel —
 		Social posts and Ads must schedule inside `start_date → end_date`.
@@ -58,10 +218,18 @@ class MarketingCampaign(Document):
 			frappe.throw(_("End date must be after the start date."))
 
 	def _validate_amounts(self) -> None:
-		"""A negative budget or spend skews every dashboard total, so refuse it."""
+		"""A negative budget or spend skews every dashboard total, so refuse it.
+		Budget is also coerced via flt and capped at MAX_CAMPAIGN_BUDGET
+		(spent is not capped as ad sync writes it).
+		"""
+		self.budget = flt(self.budget)
 		for field in ("budget", "spent"):
-			if (self.get(field) or 0) < 0:
+			val = flt(self.get(field))
+			if val < 0:
 				frappe.throw(_("{0} must be 0 or more.").format(_(self.meta.get_label(field))))
+
+		if self.budget > MAX_CAMPAIGN_BUDGET:
+			frappe.throw(_("Budget cannot exceed {0}.").format(MAX_CAMPAIGN_BUDGET))
 
 	def _backlink_whatsapp(self) -> None:
 		"""`whatsapp_blast` is the deprecated single-Link field — kept
