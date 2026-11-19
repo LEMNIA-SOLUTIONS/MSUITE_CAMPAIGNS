@@ -34,15 +34,24 @@ CHANNEL_DOCTYPE = {
 	"whatsapp": "Bulk WhatsApp Message",
 	"email": "Bulk Email Message",
 	"sms": "Bulk SMS Message",
+	# Not a Bulk * Message: its recipients are records of their own and it is started, not
+	# submitted. The channel's adapter builds and launches it (ADAPTER_BUILT below).
+	"ai_call": "AI Calling Broadcast",
 }
 
-CHANNEL_LABEL = {"whatsapp": "WhatsApp", "email": "Email", "sms": "SMS"}
+CHANNEL_LABEL = {"whatsapp": "WhatsApp", "email": "Email", "sms": "SMS", "ai_call": "AI Call"}
+
+# Channels whose blast the channel app builds and launches itself, through its campaign
+# adapter's "build" and "launch" (ai_calling.campaign_adapter). Campaign still never imports
+# the channel by name; without that adapter the channel is simply not offered.
+ADAPTER_BUILT = {"ai_call"}
 
 # Which Marketing Campaign field links back to each channel's blast.
 CAMPAIGN_LINK_FIELD = {
 	"whatsapp": "whatsapp_blast",
 	"email": "email_blast",
 	"sms": "sms_blast",
+	"ai_call": "ai_call_blast",
 }
 
 # Recipient rows are written inside the caller's transaction, with no
@@ -72,6 +81,10 @@ def build(channel: str, campaign: str | None, audience_doc, config: dict) -> dic
 
 	if not members:
 		return {"name": None, "queued": 0, "dropped": sum(reasons.values()), "reasons": reasons}
+
+	if channel in ADAPTER_BUILT:
+		result = channel_adapter(channel)["build"](campaign, audience_doc, members, config)
+		return {**result, "dropped": sum(reasons.values()), "reasons": reasons}
 
 	doc = frappe.new_doc(doctype)
 	doc.title = config.get("title") or f"{audience_doc.name} — {label}"
@@ -107,6 +120,24 @@ def build(channel: str, campaign: str | None, audience_doc, config: dict) -> dic
 		"dropped": sum(reasons.values()),
 		"reasons": reasons,
 	}
+
+
+def channel_adapter(channel: str) -> dict:
+	"""The channel's campaign adapter (hooks.py `campaign_channel_adapters`), or {}."""
+	from msuite_campaigns.campaign.services.relationships import get_adapters
+
+	return get_adapters().get(channel) or {}
+
+
+def is_offered(channel: str) -> bool:
+	"""Installed on this site: its doctype exists and, for an adapter-built channel, its
+	adapter can build and launch it."""
+	if not frappe.db.exists("DocType", CHANNEL_DOCTYPE[channel]):
+		return False
+	if channel in ADAPTER_BUILT:
+		adapter = channel_adapter(channel)
+		return bool(adapter.get("build") and adapter.get("launch"))
+	return True
 
 
 def _apply_channel_config(doc, channel: str, config: dict) -> None:
