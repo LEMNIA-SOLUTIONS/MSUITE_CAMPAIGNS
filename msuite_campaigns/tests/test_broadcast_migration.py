@@ -511,3 +511,70 @@ class TestBroadcastMigration(IntegrationTestCase):
 		after_hash = hashlib.sha256(str(sorted(after_data.items())).encode("utf-8")).hexdigest()
 
 		self.assertEqual(before_hash, after_hash)
+
+	def test_grouped_recipient_status_updates_count_and_integrity(self):
+		"""450 recipients across 3 statuses update via grouped queries in a handful of calls, not 450."""
+		statuses = ["Sent", "Delivered", "Failed"]
+		recipients = []
+		for i in range(450):
+			st = statuses[i % 3]
+			recipients.append(
+				{
+					"doctype": "SMS Recipient",
+					"mobile_number": f"+91980000{i:04d}",
+					"recipient_name": f"Recipient {i}",
+					"status": st,
+				}
+			)
+
+		bs = self._insert(
+			{
+				"doctype": "Bulk SMS Message",
+				"title": "ZZTest Grouped 450 Recipients",
+				"status": "Completed",
+				"recipient_type": "Individual",
+				"recipients": recipients,
+			},
+			self.cleanup_bulk_sms,
+		)
+
+		update_recipient_sql_calls: list[str] = []
+		original_sql = frappe.db.sql
+
+		def tracking_sql(query, *args, **kwargs):
+			if isinstance(query, str) and "UPDATE `tabBroadcast Recipient`" in query:
+				update_recipient_sql_calls.append(query)
+			return original_sql(query, *args, **kwargs)
+
+		with patch.object(frappe.db, "sql", side_effect=tracking_sql):
+			report = migration.run(dry_run=False)
+
+		bc_name = frappe.db.get_value("Broadcast", {"legacy_doctype": "Bulk SMS Message", "legacy_name": bs.name})
+		self.assertIsNotNone(bc_name)
+		self.cleanup_broadcasts.append(bc_name)
+
+		# Expect a handful (3 calls for 3 statuses <= MIGRATION_BATCH 200), not 450
+		self.assertEqual(len(update_recipient_sql_calls), 3)
+
+		# Verify resulting statuses are identical to expected behaviour
+		rec_counts = frappe.db.sql(
+			"SELECT status, count(*) FROM `tabBroadcast Recipient` WHERE broadcast=%s GROUP BY status",
+			bc_name,
+			as_list=True,
+		)
+		status_map = dict(rec_counts)
+		self.assertEqual(status_map.get("Sent"), 150)
+		self.assertEqual(status_map.get("Delivered"), 150)
+		self.assertEqual(status_map.get("Failed"), 150)
+		self.assertEqual(sum(status_map.values()), 450)
+
+		# Verify spot check addresses
+		for i in [0, 1, 2, 100, 200, 300, 449]:
+			expected_st = statuses[i % 3]
+			actual_st = frappe.db.get_value(
+				"Broadcast Recipient",
+				{"broadcast": bc_name, "address": f"+91980000{i:04d}"},
+				"status",
+			)
+			self.assertEqual(actual_st, expected_st)
+

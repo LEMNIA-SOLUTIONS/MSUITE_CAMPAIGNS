@@ -475,13 +475,23 @@ def _migrate_single_broadcast(
 	inserted = 0
 	if prepared_recipients:
 		inserted = bulk_insert_recipients(bc.name, channel_name, prepared_recipients)
-		# Update status on non-Queued rows
+		# Bucket addresses by target status for non-Queued rows and issue grouped updates
+		status_to_addresses: dict[str, list[str]] = {}
 		for rec in prepared_recipients:
 			target_st = rec.get("status")
 			if target_st and target_st != "Queued":
+				addr = str(rec["address"]).strip()
+				status_to_addresses.setdefault(target_st, []).append(addr)
+
+		for target_st, addresses in status_to_addresses.items():
+			for i in range(0, len(addresses), MIGRATION_BATCH):
+				chunk = addresses[i : i + MIGRATION_BATCH]
+				if not chunk:
+					continue
+				placeholders = ", ".join(["%s"] * len(chunk))
 				frappe.db.sql(
-					"UPDATE `tabBroadcast Recipient` SET status=%s WHERE broadcast=%s AND channel=%s AND address=%s",
-					(target_st, bc.name, channel_name, str(rec["address"]).strip()),
+					f"UPDATE `tabBroadcast Recipient` SET status=%s WHERE broadcast=%s AND channel=%s AND address IN ({placeholders})",
+					(target_st, bc.name, channel_name, *chunk),
 				)
 
 	return (inserted, warnings)
