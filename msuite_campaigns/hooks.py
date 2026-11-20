@@ -42,6 +42,10 @@ doc_events = {
 		"before_insert": f"{PE}.enforce_gate",
 		"before_save": f"{PE}.enforce_gate",
 	},
+	"Recipient List": {
+		"before_insert": f"{PE}.enforce_gate",
+		"before_save": f"{PE}.enforce_gate",
+	},
 	# ── Calendar sync — four source doctypes ─────────────────────────────
 	# Each save/delete upserts / removes the Campaign Calendar Event row so
 	# the calendar read path is a single get_all query.
@@ -52,6 +56,7 @@ doc_events = {
 		"on_trash": f"{_CCE}.on_source_delete",
 	},
 	"Contact": {
+		"before_validate": "msuite_campaigns.audience.services.contact_normalize.normalize_contact",
 		"validate": "msuite_campaigns.audience.services.contact_normalize.normalize_contact",
 	},
 }

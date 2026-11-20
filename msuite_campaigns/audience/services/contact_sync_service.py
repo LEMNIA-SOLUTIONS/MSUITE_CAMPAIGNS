@@ -35,23 +35,27 @@ def _split_full_name(full_name: str) -> tuple[str, str]:
 	return parts[0], parts[1]
 
 
-def sync_audience_to_contacts(audience_doc) -> dict:
-	"""Synchronize all members of an Audience with `tabContact`.
+def _sync_doc_to_contacts(doc, rows: list) -> dict:
+	"""Internal helper to synchronize child rows with `tabContact`.
 
-	1. Parses and normalizes phone (E.164) and email if not already present.
-	2. Performs batch lookups against `tabContact` by `phone_e164` or `email_normalized`.
-	3. Propagates existing opt-out flags from `tabContact` to `Audience Member`.
-	4. Upserts new contacts into `tabContact` so master contact book is updated.
+	Args:
+		doc: Parent document (Audience or Recipient List).
+		rows: List of child row documents (Audience Member or Recipient Contact).
 
-	Returns summary: {"total": int, "matched": int, "created": int, "opt_outs_inherited": int}
+	Returns:
+		dict: Summary dict: {"total": int, "matched": int, "created": int, "opt_outs_inherited": int}
+
+	Side effects:
+		Performs SELECT lookups on tabContact, updates matched Contact documents in DB,
+		and inserts new Contact documents for unmatched rows.
 	"""
-	if not audience_doc.members:
+	if not rows:
 		return {"total": 0, "matched": 0, "created": 0, "opt_outs_inherited": 0}
 
-	region = audience_doc.region() if hasattr(audience_doc, "region") else "IN"
+	region = doc.region() if hasattr(doc, "region") else "IN"
 
 	# Normalize members first if unparsed
-	for m in audience_doc.members:
+	for m in rows:
 		if not m.phone_e164 and m.raw_phone:
 			parsed = phone_validator.normalize(m.raw_phone, region)
 			m.phone_e164 = parsed["e164"]
@@ -62,8 +66,8 @@ def sync_audience_to_contacts(audience_doc) -> dict:
 			m.email_normalized = m.raw_email.strip().lower()
 
 	# Collect non-empty search keys
-	phones = {m.phone_e164 for m in audience_doc.members if m.phone_e164}
-	emails = {m.email_normalized for m in audience_doc.members if m.email_normalized}
+	phones = {m.phone_e164 for m in rows if m.phone_e164}
+	emails = {m.email_normalized for m in rows if m.email_normalized}
 
 	phone_to_contact: dict[str, dict] = {}
 	email_to_contact: dict[str, dict] = {}
@@ -131,7 +135,7 @@ def sync_audience_to_contacts(audience_doc) -> dict:
 	contacts_to_create = []
 	seen_new_keys = set()
 
-	for m in audience_doc.members:
+	for m in rows:
 		contact = None
 		if m.phone_e164 and m.phone_e164 in phone_to_contact:
 			contact = phone_to_contact[m.phone_e164]
@@ -223,15 +227,59 @@ def sync_audience_to_contacts(audience_doc) -> dict:
 			)
 
 	return {
-		"total": len(audience_doc.members),
+		"total": len(rows),
 		"matched": matched_count,
 		"created": created_count,
 		"opt_outs_inherited": opt_outs_inherited,
 	}
 
 
+def sync_audience_to_contacts(audience_doc) -> dict:
+	"""Synchronize all members of an Audience with `tabContact`.
+
+	1. Parses and normalizes phone (E.164) and email if not already present.
+	2. Performs batch lookups against `tabContact` by `phone_e164` or `email_normalized`.
+	3. Propagates existing opt-out flags from `tabContact` to `Audience Member`.
+	4. Upserts new contacts into `tabContact` so master contact book is updated.
+
+	Args:
+		audience_doc: The Audience document.
+
+	Returns:
+		dict: Summary: {"total": int, "matched": int, "created": int, "opt_outs_inherited": int}
+	"""
+	return _sync_doc_to_contacts(audience_doc, getattr(audience_doc, "members", None) or [])
+
+
+def sync_recipient_list_to_contacts(recipient_list_doc) -> dict:
+	"""Synchronize all contacts of a Recipient List with `tabContact`.
+
+	1. Parses and normalizes phone (E.164) and email if not already present.
+	2. Performs batch lookups against `tabContact` by `phone_e164` or `email_normalized`.
+	3. Propagates existing opt-out flags from `tabContact` to `Recipient Contact`.
+	4. Upserts new contacts into `tabContact` so master contact book is updated.
+
+	Args:
+		recipient_list_doc: The Recipient List document.
+
+	Returns:
+		dict: Summary: {"total": int, "matched": int, "created": int, "opt_outs_inherited": int}
+	"""
+	return _sync_doc_to_contacts(recipient_list_doc, getattr(recipient_list_doc, "contacts", None) or [])
+
+
 def _sync_audience_member_consent(channel: str, e164: str, raw_id: str, unsubscribed: int) -> None:
-	"""Keep Audience Member rows in sync with Contact consent."""
+	"""Keep Audience Member and Recipient Contact rows in sync with Contact consent.
+
+	Args:
+		channel: Channel identifier ("WhatsApp", "SMS", or "Email").
+		e164: Normalised E.164 phone string.
+		raw_id: Raw phone or email identifier.
+		unsubscribed: 1 for unsubscribed, 0 for opted-in.
+
+	Side effects:
+		Executes direct UPDATE statements on `tabAudience Member` and `tabRecipient Contact` in database.
+	"""
 	if channel in ("WhatsApp", "SMS"):
 		col = "unsubscribed_whatsapp" if channel == "WhatsApp" else "unsubscribed_sms"
 		frappe.db.sql(
@@ -243,11 +291,29 @@ def _sync_audience_member_consent(channel: str, e164: str, raw_id: str, unsubscr
 			""",
 			{"val": unsubscribed, "e164": e164, "raw": raw_id},
 		)
+		frappe.db.sql(
+			f"""
+			UPDATE `tabRecipient Contact`
+			SET {col} = %(val)s
+			WHERE (phone_e164 IS NOT NULL AND phone_e164 != '' AND phone_e164 = %(e164)s)
+			   OR (raw_phone IS NOT NULL AND raw_phone != '' AND raw_phone = %(raw)s)
+			""",
+			{"val": unsubscribed, "e164": e164, "raw": raw_id},
+		)
 	elif channel == "Email":
 		norm = (raw_id or "").strip().lower()
 		frappe.db.sql(
 			"""
 			UPDATE `tabAudience Member`
+			SET unsubscribed_email = %(val)s
+			WHERE (email_normalized IS NOT NULL AND email_normalized != '' AND email_normalized = %(norm)s)
+			   OR (raw_email IS NOT NULL AND raw_email != '' AND raw_email = %(raw)s)
+			""",
+			{"val": unsubscribed, "norm": norm, "raw": raw_id},
+		)
+		frappe.db.sql(
+			"""
+			UPDATE `tabRecipient Contact`
 			SET unsubscribed_email = %(val)s
 			WHERE (email_normalized IS NOT NULL AND email_normalized != '' AND email_normalized = %(norm)s)
 			   OR (raw_email IS NOT NULL AND raw_email != '' AND raw_email = %(raw)s)
