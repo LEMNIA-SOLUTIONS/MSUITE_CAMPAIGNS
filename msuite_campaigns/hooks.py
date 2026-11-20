@@ -49,6 +49,9 @@ doc_events = {
 	"Broadcast": {
 		"before_insert": f"{PE}.check_broadcast",
 		"before_save": f"{PE}.check_broadcast",
+		"after_insert": f"{_CCE}.on_source_save",
+		"on_update": f"{_CCE}.on_source_save",
+		"on_trash": f"{_CCE}.on_source_delete",
 	},
 	# Unified audience — routes through the shared gate dispatcher
 	# rather than its own function (see audience/plan_gates.py).

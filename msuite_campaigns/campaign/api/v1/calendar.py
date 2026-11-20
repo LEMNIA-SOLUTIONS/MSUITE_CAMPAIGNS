@@ -73,7 +73,10 @@ def get_calendar_events(
 
 	valid_types = [
 		t for t in requested_types
-		if t in _ALL_TYPES and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read")
+		if t in _ALL_TYPES and (
+			frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read")
+			or (t == "WhatsApp Message" and frappe.db.exists("DocType", "Broadcast") and frappe.has_permission("Broadcast", "read"))
+		)
 	]
 	if not valid_types:
 		return []
@@ -241,6 +244,11 @@ def reschedule_event(
 		frappe.throw(_(f"Unknown event type: {event_type}"))
 
 	doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
+
+	if doctype == "Bulk WhatsApp Message" and not frappe.db.exists("Bulk WhatsApp Message", source_name) and frappe.db.exists("Broadcast", source_name):
+		doctype = "Broadcast"
+		start_field = "scheduled_time"
+		end_field = "scheduled_time"
 
 	if doctype == "CRM Task":
 		task = frappe.get_doc("CRM Task", source_name)

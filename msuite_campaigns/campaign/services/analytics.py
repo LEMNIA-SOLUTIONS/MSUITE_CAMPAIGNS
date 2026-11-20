@@ -340,6 +340,18 @@ def get_campaign_dashboard(campaign: str, days: int = 30) -> dict:
 	except Exception:
 		frappe.log_error(title=f"AWS rollup merge failed for {campaign}", message=frappe.get_traceback())
 
+	try:
+		from msuite_campaigns.broadcast import rollup as broadcast_rollup
+
+		broadcast_metrics = broadcast_rollup.campaign_metrics(campaign, days=days)
+		modules = _merge_broadcast_metrics(modules, broadcast_metrics)
+	except ImportError:
+		pass
+	except Exception:
+		frappe.log_error(
+			title=f"Broadcast rollup merge failed for {campaign}", message=frappe.get_traceback()
+		)
+
 	summary = _cross_module_summary(modules)
 	attribution_summary = attribution.get_attribution_summary(campaign)
 
@@ -465,6 +477,98 @@ def sync_campaign_spend(campaign: str) -> float:
 # ==========================================================================
 # Cross-module summary
 # ==========================================================================
+
+
+def _merge_broadcast_metrics(modules: dict, broadcast_metrics: dict) -> dict:
+	"""Merge Broadcast metrics into the channel modules dict.
+
+	Sums metrics per channel key next to the old adapters' numbers without
+	double counting. Handles both existing adapter structures (with 'totals'
+	or 'metrics') and previously unrepresented channels.
+
+	Args:
+		modules: Channel breakdown dict from adapters and AWS rollup.
+		broadcast_metrics: Mapping of channel name to metrics dictionary.
+
+	Returns:
+		dict: Mutated modules dict containing merged metrics.
+
+	Raises:
+		None.
+
+	Side effects:
+		Mutates modules dict in place.
+	"""
+	for ch_name, b_data in (broadcast_metrics or {}).items():
+		if not isinstance(b_data, dict):
+			continue
+		bm = b_data.get("metrics") or {}
+		blasts_count = b_data.get("blasts") or 0
+
+		target_key = None
+		for k in modules.keys():
+			if k.lower() == ch_name.lower():
+				target_key = k
+				break
+		if not target_key:
+			target_key = ch_name.lower()
+			modules[target_key] = {
+				"channel": ch_name,
+				"label": ch_name,
+				"module": target_key,
+				"blasts": 0,
+				"metrics": {},
+				"totals": {},
+				"headline": {},
+				"engine": b_data.get("engine", "standard"),
+				"stale": b_data.get("stale", False),
+			}
+
+		target = modules[target_key]
+		if not isinstance(target, dict):
+			target = {}
+			modules[target_key] = target
+
+		# 1. Update/merge 'metrics' dict
+		tm = target.setdefault("metrics", {})
+		for m_key in ("sent", "delivered", "failed", "audience", "credits", "read"):
+			if m_key in bm:
+				tm[m_key] = (tm.get(m_key) or 0) + (bm.get(m_key) or 0)
+		sent = tm.get("sent") or 0
+		tm["delivery_rate"] = round((tm.get("delivered") or 0) / sent * 100, 1) if sent else 0
+
+		# 2. Update/merge 'totals' dict
+		tt = target.setdefault("totals", {})
+		tt["sent"] = (tt.get("sent") or 0) + (bm.get("sent") or 0)
+		tt["delivered"] = (tt.get("delivered") or 0) + (bm.get("delivered") or 0)
+		tt["failed"] = (tt.get("failed") or 0) + (bm.get("failed") or 0)
+		tt["read"] = (tt.get("read") or 0) + (bm.get("read") or 0)
+		tt["recipients"] = (tt.get("recipients") or 0) + (bm.get("audience") or 0)
+		t_sent = tt["sent"]
+		tt["delivery_rate"] = round(tt["delivered"] / t_sent * 100, 1) if t_sent else 0
+		t_deliv = tt["delivered"]
+		tt["read_rate"] = round(tt["read"] / t_deliv * 100, 1) if t_deliv else 0
+
+		# 3. Update 'headline' if present
+		if "headline" in target:
+			th = target["headline"]
+			th["Recipients"] = tt["recipients"]
+			th["Sent"] = tt["sent"]
+			th["Delivered"] = tt["delivered"]
+			th["Read"] = tt["read"]
+
+		# 4. Update blasts count
+		if "blasts" in target:
+			target["blasts"] = (target.get("blasts") or 0) + blasts_count
+		elif "bulk_messages" in target:
+			target["blasts"] = len(target.get("bulk_messages") or []) + blasts_count
+		else:
+			target["blasts"] = blasts_count
+
+		if target.get("engine") and target.get("engine") != b_data.get("engine"):
+			target["engine"] = "mixed"
+
+	return modules
 
 
 def _cross_module_summary(modules: dict[str, dict]) -> dict:

@@ -346,6 +346,139 @@ def list_whatsapp_blasts(campaign: str = "", search: str = "", limit: int = 50) 
 
 
 @frappe.whitelist()
+def list_broadcasts_for_campaign(campaign: str = "", search: str = "", limit: int = 50) -> dict:
+	"""List Broadcast rows that can be linked to a Marketing Campaign.
+
+	Mirrors `list_whatsapp_blasts` output shape:
+	  {
+	    "current": [<name>, ...],   # broadcasts already linked to this Campaign
+	    "rows": [
+	      {name, title, status, recipient_count, scheduled, linked_to}
+	    ]
+	  }
+
+	Args:
+		campaign: Optional name of the Marketing Campaign.
+		search: Optional search term matching on Broadcast title.
+		limit: Maximum number of rows to return (default 50).
+
+	Returns:
+		dict: Pick feed containing 'current' list and 'rows' list.
+
+	Raises:
+		frappe.PermissionError: If user lacks read permission on Marketing Campaign or Broadcast.
+
+	Side effects:
+		None.
+	"""
+	if campaign:
+		if not frappe.has_permission("Marketing Campaign", "read", doc=campaign):
+			frappe.throw(
+				_("No read permission for Marketing Campaign {0}").format(campaign), frappe.PermissionError
+			)
+
+	if not frappe.db.exists("DocType", "Broadcast"):
+		return {"current": [], "rows": []}
+
+	if not frappe.has_permission("Broadcast", "read"):
+		frappe.throw(_("No read permission for Broadcast"), frappe.PermissionError)
+
+	current = []
+	if campaign:
+		current = frappe.get_all("Broadcast", filters={"campaign": campaign}, pluck="name")
+
+	filters: dict = {}
+	if search:
+		filters = {"title": ["like", f"%{search}%"]}
+
+	raw = frappe.get_all(
+		"Broadcast",
+		filters=filters,
+		fields=["name", "title", "status", "scheduled_time", "total_recipients", "campaign", "modified"],
+		order_by="modified desc",
+		limit=int(limit or 50),
+	)
+
+	rows = []
+	for r in raw:
+		rows.append(
+			{
+				"name": r.get("name") or "",
+				"title": r.get("title") or "",
+				"status": r.get("status") or "Draft",
+				"recipient_count": r.get("total_recipients") or 0,
+				"scheduled": _iso(r.get("scheduled_time")),
+				"linked_to": (r.get("campaign") or "") if r.get("campaign") != campaign else "",
+			}
+		)
+
+	return {"current": current, "rows": rows}
+
+
+@frappe.whitelist()
+def link_broadcast(campaign: str, broadcast: str) -> dict:
+	"""Link an existing Broadcast to a Marketing Campaign.
+
+	Sets the broadcast's own `campaign` field (1:N relationship).
+
+	Args:
+		campaign: Name of the Marketing Campaign.
+		broadcast: Name of the Broadcast.
+
+	Returns:
+		dict: {"status": "success", "broadcast": broadcast, "campaign": campaign}
+
+	Raises:
+		frappe.DoesNotExistError: If campaign or broadcast does not exist.
+		frappe.PermissionError: If user lacks write permission on Marketing Campaign or Broadcast.
+
+	Side effects:
+		Updates Broadcast.campaign in the database and commits.
+	"""
+	if not frappe.db.exists("Marketing Campaign", campaign):
+		frappe.throw(_("Marketing Campaign {0} not found.").format(campaign), frappe.DoesNotExistError)
+	if not frappe.db.exists("Broadcast", broadcast):
+		frappe.throw(_("Broadcast {0} not found.").format(broadcast), frappe.DoesNotExistError)
+
+	if not frappe.has_permission("Marketing Campaign", "write", doc=campaign):
+		frappe.throw(
+			_("No write permission for Marketing Campaign {0}").format(campaign), frappe.PermissionError
+		)
+	frappe.has_permission("Broadcast", "write", doc=broadcast, throw=True)
+
+	frappe.db.set_value("Broadcast", broadcast, "campaign", campaign, update_modified=True)
+	frappe.db.commit()
+	return {"status": "success", "broadcast": broadcast, "campaign": campaign}
+
+
+@frappe.whitelist()
+def unlink_broadcast(broadcast: str) -> dict:
+	"""Detach a Broadcast from whichever Marketing Campaign it is currently linked to.
+
+	Args:
+		broadcast: Name of the Broadcast.
+
+	Returns:
+		dict: {"status": "success", "broadcast": broadcast}
+
+	Raises:
+		frappe.DoesNotExistError: If broadcast does not exist.
+		frappe.PermissionError: If user lacks write permission on Broadcast.
+
+	Side effects:
+		Clears Broadcast.campaign in the database and commits.
+	"""
+	if not frappe.db.exists("Broadcast", broadcast):
+		frappe.throw(_("Broadcast {0} not found.").format(broadcast), frappe.DoesNotExistError)
+
+	frappe.has_permission("Broadcast", "write", doc=broadcast, throw=True)
+
+	frappe.db.set_value("Broadcast", broadcast, "campaign", "", update_modified=True)
+	frappe.db.commit()
+	return {"status": "success", "broadcast": broadcast}
+
+
+@frappe.whitelist()
 def link_whatsapp_blast(campaign: str, blast: str) -> dict:
 	"""Link an existing Bulk WhatsApp Message to this Campaign — sets
 	the broadcast's own `campaign` field (the real, 1:N relationship).
@@ -588,6 +721,39 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 				new_ec.status = "Draft"
 				new_ec.insert(ignore_permissions=True)
 
+		# E. Duplicate Broadcasts under the campaign
+		if frappe.db.exists("DocType", "Broadcast"):
+			old_broadcasts = frappe.get_all("Broadcast", filters={"campaign": name}, pluck="name")
+			for old_b_name in old_broadcasts:
+				old_b = frappe.get_doc("Broadcast", old_b_name)
+				new_b = frappe.copy_doc(old_b)
+				new_b.campaign = new_mc.name
+				new_b.status = "Draft"
+				new_b.scheduled_time = None
+				new_b.launched_at = None
+				new_b.launch_error = ""
+				new_b.legacy_doctype = ""
+				new_b.legacy_name = ""
+				new_b.total_recipients = 0
+				for ch in getattr(new_b, "channels", []):
+					ch.status = "Draft"
+					ch.launch_error = ""
+					ch.recipient_count = 0
+					ch.sent_count = 0
+					ch.delivered_count = 0
+					ch.read_count = 0
+					ch.failed_count = 0
+					ch.bounced_count = 0
+					ch.opened_count = 0
+					ch.clicked_count = 0
+					ch.unsubscribed_count = 0
+					ch.retry_count = 0
+					if getattr(ch, "channel", None) != "WhatsApp":
+						setattr(ch, "variable_type", "")
+					if getattr(ch, "channel", None) == "SMS":
+						ch.actual_credits = 0
+				new_b.insert(ignore_permissions=True, ignore_links=True)
+
 	frappe.db.commit()
 	return _serialize(new_mc)
 
@@ -632,6 +798,12 @@ def delete_campaign(name: str, cascade: int = 0) -> dict:
 			for ec in email_campaigns:
 				frappe.delete_doc("Email Campaign", ec, ignore_permissions=True, force=True)
 
+		# Delete Broadcasts under the campaign
+		if frappe.db.exists("DocType", "Broadcast"):
+			broadcasts = frappe.get_all("Broadcast", filters={"campaign": name}, pluck="name")
+			for b in broadcasts:
+				frappe.delete_doc("Broadcast", b, ignore_permissions=True, force=True)
+
 	# Delete parent campaign itself
 	frappe.delete_doc("Marketing Campaign", name, ignore_permissions=True, force=True)
 	frappe.db.commit()
@@ -644,6 +816,7 @@ def _get_relationship_counts(campaign_name: str) -> dict:
 	ad_campaigns = 0
 	email_campaigns = 0
 	whatsapp_blasts = 0
+	broadcasts = 0
 
 	if frappe.db.exists("DocType", "Social Post"):
 		posts = frappe.get_all("Social Post", filters={"campaign": campaign_name}, pluck="name")
@@ -661,11 +834,15 @@ def _get_relationship_counts(campaign_name: str) -> dict:
 	if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
 		whatsapp_blasts = frappe.db.count("Bulk WhatsApp Message", {"campaign": campaign_name})
 
+	if frappe.db.exists("DocType", "Broadcast"):
+		broadcasts = frappe.db.count("Broadcast", {"campaign": campaign_name})
+
 	return {
 		"social_posts": social_posts,
 		"ad_campaigns": ad_campaigns,
 		"email_campaigns": email_campaigns,
 		"whatsapp_blasts": whatsapp_blasts,
+		"broadcasts": broadcasts,
 	}
 
 
@@ -815,6 +992,8 @@ def bulk_delete_campaigns(names: str, cascade: int = 0) -> list[dict]:
 					linked_types.append(_("WhatsApp Blasts"))
 				if counts.get("email_campaigns"):
 					linked_types.append(_("Email Campaigns"))
+				if counts.get("broadcasts"):
+					linked_types.append(_("Broadcasts"))
 
 				if len(linked_types) > 1:
 					linked_str = ", ".join(linked_types[:-1]) + _(" or ") + linked_types[-1]
@@ -856,6 +1035,11 @@ def bulk_delete_campaigns(names: str, cascade: int = 0) -> list[dict]:
 					)
 					for ec in email_campaigns:
 						frappe.delete_doc("Email Campaign", ec, ignore_permissions=True, force=True)
+
+				if frappe.db.exists("DocType", "Broadcast"):
+					broadcasts = frappe.get_all("Broadcast", filters={"campaign": name}, pluck="name")
+					for b in broadcasts:
+						frappe.delete_doc("Broadcast", b, ignore_permissions=True, force=True)
 
 			frappe.delete_doc("Marketing Campaign", name, ignore_permissions=True, force=True)
 			frappe.db.commit()
