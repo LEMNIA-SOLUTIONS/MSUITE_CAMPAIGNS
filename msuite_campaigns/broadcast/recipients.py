@@ -338,3 +338,45 @@ def apply_delivery_status(
 
 	frappe.db.sql(sql, params)
 	return bool(frappe.db._cursor.rowcount > 0)
+
+
+def requeue_failed_recipients(broadcast: str, channel: str) -> int:
+	"""Re-queue retryable failed recipients for a broadcast and channel.
+
+	Updates tabBroadcast Recipient rows where status is 'Failed' and is_retryable is 1,
+	setting status='Retrying' and incrementing retry_count by 1. Bypasses monotonic
+	rank guard deliberately to allow retries.
+
+	Args:
+		broadcast: Name of the Broadcast document.
+		channel: Channel name ('WhatsApp', 'Email', or 'SMS').
+
+	Returns:
+		int: Number of affected recipient rows updated to 'Retrying'.
+
+	Raises:
+		frappe.ValidationError: If channel is invalid.
+
+	Side effects:
+		Executes single atomic UPDATE on tabBroadcast Recipient (no commit; caller commits).
+	"""
+	if channel not in CHANNELS:
+		frappe.throw(_("Invalid channel: {0}. Must be one of {1}.").format(channel, ", ".join(CHANNELS)))
+
+	if not broadcast:
+		return 0
+
+	now_val = now_datetime()
+	sql = """
+		UPDATE `tabBroadcast Recipient`
+		SET `status` = 'Retrying',
+			`retry_count` = `retry_count` + 1,
+			`modified` = %(now)s
+		WHERE `broadcast` = %(broadcast)s
+		  AND `channel` = %(channel)s
+		  AND `status` = 'Failed'
+		  AND `is_retryable` = 1
+	"""
+	frappe.db.sql(sql, {"broadcast": broadcast, "channel": channel, "now": now_val})
+	return int(frappe.db._cursor.rowcount or 0)
+
