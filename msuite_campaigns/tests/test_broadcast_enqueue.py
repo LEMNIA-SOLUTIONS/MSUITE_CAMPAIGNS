@@ -124,8 +124,8 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 
 		fake_adapter = {"channel": "WhatsApp", "send_one": fake_send_one}
 		with patch(
-			"msuite_campaigns.campaign.services.relationships.get_adapters",
-			return_value={"whatsapp": fake_adapter},
+			"msuite_campaigns.broadcast.adapters.get_channel_adapter",
+			return_value=fake_adapter,
 		):
 			res = run_chunk(b.name, "WhatsApp", first_name, last_name)
 
@@ -180,12 +180,12 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		def fake_send_one(broadcast_doc, channel_row, recipient_dict):
 			if recipient_dict["address"] == "+919844400001":
 				raise RuntimeError("WhatsApp API 500: Rate limit exceeded")
-			return {"outcome": "fired"}
+			return {"status": "Sent", "provider_message_id": "wa_msg_2"}
 
 		fake_adapter = {"channel": "WhatsApp", "send_one": fake_send_one}
 		with patch(
-			"msuite_campaigns.campaign.services.relationships.get_adapters",
-			return_value={"whatsapp": fake_adapter},
+			"msuite_campaigns.broadcast.adapters.get_channel_adapter",
+			return_value=fake_adapter,
 		):
 			res = run_chunk(b.name, "WhatsApp", first_name, last_name)
 
@@ -205,7 +205,7 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 
 		# Verify DB status for the successful recipient (+919844400002)
 		succ_rec = frappe.db.get_value("Broadcast Recipient", rec_by_addr["+919844400002"], "status")
-		self.assertEqual(succ_rec, "Queued")
+		self.assertEqual(succ_rec, "Sent")
 
 	def test_no_adapter_raises_clear_error(self):
 		"""run_chunk raises a clear error when no adapter is registered for the channel."""
@@ -215,8 +215,8 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		rec = frappe.get_all("Broadcast Recipient", filters={"broadcast": b.name}, fields=["name"])[0]
 
 		with patch(
-			"msuite_campaigns.campaign.services.relationships.get_adapters",
-			return_value={},
+			"msuite_campaigns.broadcast.adapters.get_channel_adapter",
+			return_value=None,
 		):
 			with self.assertRaises(frappe.ValidationError):
 				run_chunk(b.name, "WhatsApp", rec.name, rec.name)

@@ -365,3 +365,50 @@ class TestBroadcastAws(IntegrationTestCase):
 			self.assertEqual(mock_trigger.call_count, 1)
 			self.assertEqual(res2["s3_key"], "s3_k")
 			self.assertEqual(res2["message_id"], "sqs-msg-unique")
+
+	def test_export_succeeds_when_channel_row_already_in_progress_and_second_call_idempotent(self):
+		"""export_and_enqueue_channel succeeds when channel row is already In Progress (hub ordering) and guards against re-trigger."""
+		from msuite_campaigns.broadcast.aws import export_and_enqueue_channel
+
+		b = self._make_broadcast(channel="WhatsApp", delivery_engine="AWS")
+		# Transition channel row to 'In Progress' as hub.start_channel does prior to calling export
+		frappe.db.set_value(
+			"Broadcast Channel",
+			b.channels[0].name,
+			"status",
+			"In Progress",
+			update_modified=False,
+		)
+		b.reload()
+		self.assertEqual(b.channels[0].status, "In Progress")
+
+		bulk_insert_recipients(b.name, "WhatsApp", [{"address": "+919800000077"}])
+
+		mock_adapter = {
+			"channel": "WhatsApp",
+			"manifest_header": lambda doc, row: {},
+			"manifest_row": lambda doc, row, r: {"phone": r["address"]},
+		}
+
+		mock_trigger = MagicMock(return_value={"message_id": "sqs-msg-hub-order"})
+
+		with patch("msuite_campaigns.aws_pipeline.client.request_upload_url", return_value={"url": "http://put", "key": "s3_k_hub", "max_bytes": 100000}), patch(
+			"msuite_campaigns.aws_pipeline.client.upload_manifest"
+		), patch("msuite_campaigns.aws_pipeline.client.trigger_campaign", mock_trigger), patch(
+			"msuite_campaigns.broadcast.aws._require_feature"
+		), patch(
+			"msuite_campaigns.broadcast.aws._get_channel_adapter", return_value=mock_adapter
+		):
+			# First call triggers even though channel row status is already 'In Progress'
+			res1 = export_and_enqueue_channel(b.name, "WhatsApp")
+			self.assertEqual(res1["message_id"], "sqs-msg-hub-order")
+			self.assertEqual(res1["s3_key"], "s3_k_hub")
+			self.assertEqual(res1["queued"], 1)
+			self.assertEqual(mock_trigger.call_count, 1)
+
+			# Second call uses cache and does NOT trigger again
+			res2 = export_and_enqueue_channel(b.name, "WhatsApp")
+			self.assertEqual(mock_trigger.call_count, 1)
+			self.assertEqual(res2["message_id"], "sqs-msg-hub-order")
+			self.assertEqual(res2["s3_key"], "s3_k_hub")
+			self.assertEqual(res2["queued"], 1)

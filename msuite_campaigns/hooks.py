@@ -99,6 +99,7 @@ scheduler_events = {
 	"cron": {
 		"*/5 * * * *": [
 			"msuite_campaigns.campaign.services.lifecycle.activate_due_marketing_campaigns",
+			"msuite_campaigns.broadcast.scheduler.start_due_channels",
 		],
 		"15 * * * *": [
 			# Campaign spend sync — Analytics Aggregation (Phase 3).

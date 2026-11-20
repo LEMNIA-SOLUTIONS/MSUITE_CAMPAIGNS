@@ -102,25 +102,9 @@ def run_chunk(broadcast: str, channel: str, first_name: str, last_name: str) -> 
 	if not _is_channel_active(broadcast, channel):
 		return {"sent": 0, "failed": 0, "stopped": True}
 
-	from msuite_campaigns.campaign.services.relationships import get_adapters
+	from msuite_campaigns.broadcast.adapters import get_channel_adapter
 
-	adapters = get_adapters() or {}
-	adapter = None
-	for a in adapters.values():
-		if isinstance(a, dict):
-			if a.get("channel") == channel:
-				adapter = a
-				break
-			if a.get("channel", "").lower() == channel.lower():
-				adapter = a
-				break
-			if a.get("label", "").lower() == channel.lower():
-				adapter = a
-				break
-			if a.get("key", "").lower() == channel.lower():
-				adapter = a
-				break
-
+	adapter = get_channel_adapter(channel)
 	if not adapter or not callable(adapter.get("send_one")):
 		frappe.throw(_("No channel adapter with send_one found for channel '{0}'.").format(channel))
 
@@ -159,8 +143,52 @@ def run_chunk(broadcast: str, channel: str, first_name: str, last_name: str) -> 
 			break
 
 		try:
-			send_one_fn(broadcast_doc, channel_row, r)
-			sent += 1
+			send_res = send_one_fn(broadcast_doc, channel_row, r)
+			if isinstance(send_res, dict):
+				status = send_res.get("status") or "Sent"
+				pm_id = send_res.get("provider_message_id") or r.get("provider_message_id")
+				if not pm_id:
+					pm_id = r["name"]
+				if pm_id != r.get("provider_message_id"):
+					frappe.db.set_value(
+						"Broadcast Recipient",
+						r["name"],
+						"provider_message_id",
+						pm_id,
+						update_modified=False,
+					)
+				extra_fields = {
+					k: v
+					for k, v in send_res.items()
+					if k
+					in (
+						"sent_at",
+						"delivered_at",
+						"read_at",
+						"opened_at",
+						"clicked_at",
+						"error_code",
+						"failure_reason",
+						"is_retryable",
+						"retry_count",
+						"credits",
+						"segments",
+					)
+					and v is not None
+				}
+				apply_delivery_status(
+					broadcast,
+					channel,
+					pm_id,
+					status,
+					**extra_fields,
+				)
+				if status == "Sent":
+					sent += 1
+				else:
+					failed += 1
+			else:
+				sent += 1
 		except Exception as exc:
 			failed += 1
 			pm_id = r.get("provider_message_id")

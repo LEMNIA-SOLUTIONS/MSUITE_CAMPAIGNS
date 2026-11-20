@@ -323,3 +323,62 @@ class TestBroadcastRollup(IntegrationTestCase):
 		self.assertEqual(m["failed"], 20)  # 10 + 10
 		# 250 / 270 * 100 = 92.6%
 		self.assertEqual(m["delivery_rate"], 92.6)
+
+	def test_campaign_metrics_reuses_dynamo_fetch_and_avoids_n_plus_one_get_doc(self):
+		"""campaign_metrics avoids N+1 get_doc and reuses DynamoDB fetch results across same-campaign broadcasts."""
+		from msuite_campaigns.broadcast.rollup import campaign_metrics
+
+		campaign_name = f"CAMP_OPT_{frappe.generate_hash(length=8)}"
+
+		# Broadcast 1: AWS WhatsApp
+		self._make_broadcast(
+			campaign=campaign_name,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"delivery_engine": "AWS",
+					"recipient_count": 100,
+				}
+			],
+		)
+
+		# Broadcast 2: AWS WhatsApp
+		self._make_broadcast(
+			campaign=campaign_name,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"delivery_engine": "AWS",
+					"recipient_count": 150,
+				}
+			],
+		)
+
+		mock_dynamo_data = {
+			"sent_count": 80,
+			"delivered_count": 75,
+			"failed_count": 5,
+			"read_count": 50,
+			"retried_count": 1,
+		}
+
+		real_get_doc = frappe.get_doc
+		get_doc_broadcast_count = 0
+
+		def counting_get_doc(doctype, *args, **kwargs):
+			nonlocal get_doc_broadcast_count
+			if doctype == "Broadcast":
+				get_doc_broadcast_count += 1
+			return real_get_doc(doctype, *args, **kwargs)
+
+		with patch("msuite_campaigns.aws_pipeline.rollup.fetch", return_value=mock_dynamo_data) as mock_fetch, patch(
+			"frappe.get_doc", side_effect=counting_get_doc
+		):
+			res = campaign_metrics(campaign_name)
+
+		# 2 broadcasts in the campaign -> get_doc("Broadcast") called exactly 2 times (once per broadcast, 0 times in channel_metrics)
+		self.assertEqual(get_doc_broadcast_count, 2)
+		# Same campaign key -> aws_rollup.fetch called exactly 1 time
+		mock_fetch.assert_called_once_with(f"{campaign_name}__WhatsApp")
+		self.assertIn("WhatsApp", res)
+		self.assertEqual(res["WhatsApp"]["metrics"]["audience"], 250)

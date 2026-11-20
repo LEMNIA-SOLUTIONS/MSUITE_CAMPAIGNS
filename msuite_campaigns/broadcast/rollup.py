@@ -17,7 +17,13 @@ from msuite_campaigns.aws_pipeline import rollup as aws_rollup
 from msuite_campaigns.broadcast.aws import dynamo_campaign_id
 
 
-def channel_metrics(broadcast: str, channel: str, days: int = 30) -> dict:
+def channel_metrics(
+	broadcast: str | Any,
+	channel: str,
+	days: int = 30,
+	broadcast_doc: Any = None,
+	dynamo_cache: dict[str, Any] | None = None,
+) -> dict:
 	"""Compute aggregated delivery metrics for a single broadcast channel.
 
 	Standard-engine rows read counters directly from the Broadcast Channel child row.
@@ -25,9 +31,11 @@ def channel_metrics(broadcast: str, channel: str, days: int = 30) -> dict:
 	on provider/network errors so that dashboards do not 500.
 
 	Args:
-		broadcast: Name of the Broadcast document.
+		broadcast: Name of the Broadcast document, or Broadcast document instance.
 		channel: Channel name ("WhatsApp", "Email", or "SMS").
 		days: Lookback window in days (kept for parity; DynamoDB SUMMARY is running total).
+		broadcast_doc: Optional pre-loaded Broadcast document to avoid redundant DB queries.
+		dynamo_cache: Optional dict cache of DynamoDB metrics within the current request context.
 
 	Returns:
 		dict: Metric payload mirroring aws_pipeline.rollup.rollup() shape plus 'engine':
@@ -55,15 +63,30 @@ def channel_metrics(broadcast: str, channel: str, days: int = 30) -> dict:
 	Side effects:
 		None.
 	"""
-	broadcast_doc = frappe.get_doc("Broadcast", broadcast)
+	if broadcast_doc is None:
+		if isinstance(broadcast, str):
+			broadcast_doc = frappe.get_doc("Broadcast", broadcast)
+		else:
+			broadcast_doc = broadcast
+
+	broadcast_name = getattr(broadcast_doc, "name", None) or (
+		broadcast if isinstance(broadcast, str) else ""
+	)
+
 	channel_row = None
-	for ch in broadcast_doc.channels or []:
-		if ch.channel == channel:
+	channels = getattr(broadcast_doc, "channels", None) or (
+		broadcast_doc.get("channels") if isinstance(broadcast_doc, dict) else []
+	)
+	for ch in channels or []:
+		ch_name = getattr(ch, "channel", None) or (
+			ch.get("channel") if isinstance(ch, dict) else None
+		)
+		if ch_name == channel:
 			channel_row = ch
 			break
 
 	if not channel_row:
-		frappe.throw(_("Channel '{0}' not found on Broadcast '{1}'.").format(channel, broadcast))
+		frappe.throw(_("Channel '{0}' not found on Broadcast '{1}'.").format(channel, broadcast_name))
 
 	engine = (channel_row.delivery_engine or "AWS").lower()
 	audience = int(channel_row.recipient_count or 0)
@@ -101,14 +124,19 @@ def channel_metrics(broadcast: str, channel: str, days: int = 30) -> dict:
 	# AWS engine
 	campaign_id = dynamo_campaign_id(broadcast_doc, channel)
 	data = None
-	try:
-		data = aws_rollup.fetch(campaign_id)
-	except Exception:
-		frappe.log_error(
-			title=f"Broadcast AWS analytics read failed for {campaign_id}",
-			message=frappe.get_traceback(),
-		)
-		data = None
+	if dynamo_cache is not None and campaign_id in dynamo_cache:
+		data = dynamo_cache[campaign_id]
+	else:
+		try:
+			data = aws_rollup.fetch(campaign_id)
+		except Exception:
+			frappe.log_error(
+				title=f"Broadcast AWS analytics read failed for {campaign_id}",
+				message=frappe.get_traceback(),
+			)
+			data = None
+		if dynamo_cache is not None:
+			dynamo_cache[campaign_id] = data
 
 	reachable = data is not None
 	data_dict = data or {}
@@ -214,6 +242,10 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 	for each channel, deduplicating DynamoDB queries where appropriate, and merges results
 	into a single dictionary keyed by channel name.
 
+	Avoids N+1 document loads by reusing loaded Broadcast documents, and avoids redundant
+	external DynamoDB HTTP requests by caching fetch responses across channels sharing
+	the same campaign key.
+
 	Args:
 		campaign: Name of the Marketing Campaign document.
 		days: Lookback window in days (defaults to 30).
@@ -236,6 +268,8 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 	results: dict[str, dict] = {}
 	# Track AWS dynamo keys already fetched for this campaign to prevent double-counting
 	seen_aws_dynamo_keys: set[str] = set()
+	# Cache DynamoDB fetch responses per campaign_id to prevent redundant external HTTP calls
+	dynamo_cache: dict[str, Any] = {}
 
 	for b_name in broadcast_names:
 		broadcast_doc = frappe.get_doc("Broadcast", b_name)
@@ -254,7 +288,13 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 				else:
 					seen_aws_dynamo_keys.add(dynamo_id)
 
-			m = channel_metrics(b_name, channel_name, days=days)
+			m = channel_metrics(
+				b_name,
+				channel_name,
+				days=days,
+				broadcast_doc=broadcast_doc,
+				dynamo_cache=dynamo_cache,
+			)
 
 			if channel_name not in results:
 				results[channel_name] = m

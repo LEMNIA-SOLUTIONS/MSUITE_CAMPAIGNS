@@ -24,7 +24,10 @@ from msuite_campaigns.aws_pipeline.dispatch import (
 	is_ready,
 )
 from msuite_campaigns.aws_pipeline.rollup import dynamo_key
-from msuite_campaigns.broadcast.constants import RECIPIENT_INSERT_BATCH
+from msuite_campaigns.broadcast.constants import (
+	RECIPIENT_INSERT_BATCH,
+	SENDABLE_RECIPIENT_STATUSES,
+)
 
 
 def dynamo_campaign_id(broadcast_doc: Any, channel: str) -> str:
@@ -135,7 +138,7 @@ def _recipients_generator(broadcast: str, channel: str) -> Iterator[dict]:
 		filters = [
 			["broadcast", "=", broadcast],
 			["channel", "=", channel],
-			["status", "in", ["Queued", "Retrying"]],
+			["status", "in", list(SENDABLE_RECIPIENT_STATUSES)],
 		]
 		if last_name:
 			filters.append(["name", ">", last_name])
@@ -206,9 +209,9 @@ def export_and_enqueue_channel(broadcast: str, channel: str) -> dict:
 	  5. Record outbound messages via adapter record_outbound
 
 	Guard:
-	  A crash after trigger must not re-trigger on retry. The channel status is set to
-	  'In Progress' on the channel row and cached in Redis. Subsequent invocations detect
-	  the active trigger and return without triggering again.
+	  A crash after trigger must not re-trigger on retry. Uses frappe.cache marker
+	  ('broadcast_aws_triggered:{broadcast}:{channel}') for idempotency.
+	  Subsequent invocations detect the cached result and return without triggering again.
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -239,13 +242,6 @@ def export_and_enqueue_channel(broadcast: str, channel: str) -> dict:
 
 	if not channel_row:
 		frappe.throw(_("Channel '{0}' not found on Broadcast '{1}'.").format(channel, broadcast))
-
-	if channel_row.status == "In Progress":
-		return {
-			"s3_key": "",
-			"message_id": "",
-			"queued": int(channel_row.recipient_count or 0),
-		}
 
 	_require_feature((channel or "").lower())
 
