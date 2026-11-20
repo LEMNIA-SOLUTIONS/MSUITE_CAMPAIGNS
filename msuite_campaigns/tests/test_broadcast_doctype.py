@@ -136,6 +136,33 @@ class TestBroadcastDocType(IntegrationTestCase):
 		err_str = str(ctx.exception)
 		self.assertTrue("sms_account" in err_str or "SMS Account" in err_str)
 
+	def test_foreign_channel_column_falsy_string_zero_allowed(self):
+		"""Setting string '0' for a foreign channel checkbox must not be rejected."""
+		doc = self._make_broadcast(
+			channels=[
+				{
+					"channel": "Email",
+					"email_account": "email@example.com",
+					"email_template": "tpl_email",
+					"is_mpm": "0",
+				}
+			]
+		)
+		doc.validate()
+
+	def test_invalid_channel_rejected(self):
+		"""A channel row with an unknown channel must be rejected."""
+		doc = self._make_broadcast(
+			channels=[
+				{
+					"channel": "Slack",
+				}
+			]
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			doc.validate()
+		self.assertIn("Slack", str(ctx.exception))
+
 	def test_naming_series_regex(self):
 		"""Inserted Broadcast name must match ^BC-\\d{4}-\\d{5}$."""
 		doc = self._make_broadcast()

@@ -11,22 +11,24 @@ from frappe.model.document import Document
 from frappe.utils import get_datetime, now_datetime
 
 from msuite_campaigns.broadcast.constants import (
-	BROADCAST_STATUSES,
-	CHANNEL_STATUSES,
+	CHANNEL_EMAIL,
+	CHANNEL_SMS,
+	CHANNEL_WHATSAPP,
 	CHANNELS,
 	RECIPIENT_INSERT_BATCH,
+	STATUS_SCHEDULED,
 )
 
 # Required fields per channel (fieldname, label lookup key)
 REQUIRED_CHANNEL_FIELDS: dict[str, tuple[str, ...]] = {
-	"WhatsApp": ("whatsapp_account", "whatsapp_template"),
-	"Email": ("email_account", "email_template"),
-	"SMS": ("sms_account", "sms_template"),
+	CHANNEL_WHATSAPP: ("whatsapp_account", "whatsapp_template"),
+	CHANNEL_EMAIL: ("email_account", "email_template"),
+	CHANNEL_SMS: ("sms_account", "sms_template"),
 }
 
 # Channel-specific fields that cannot appear on rows of a different channel
 CHANNEL_SPECIFIC_FIELDS: dict[str, tuple[str, ...]] = {
-	"WhatsApp": (
+	CHANNEL_WHATSAPP: (
 		"whatsapp_account",
 		"whatsapp_template",
 		"variable_type",
@@ -44,13 +46,13 @@ CHANNEL_SPECIFIC_FIELDS: dict[str, tuple[str, ...]] = {
 		"is_lead_automation_broadcast",
 		"lead_automation_rule",
 	),
-	"Email": (
+	CHANNEL_EMAIL: (
 		"email_account",
 		"email_template",
 		"subject_override",
 		"from_name",
 	),
-	"SMS": (
+	CHANNEL_SMS: (
 		"sms_account",
 		"sms_template",
 		"estimated_credits",
@@ -102,10 +104,11 @@ class Broadcast(Document):
 			frappe.throw(_("At least one channel is required."))
 
 	def _validate_unique_channels(self) -> None:
-		"""Ensure only one row per channel type exists.
+		"""Ensure only one row per valid channel type exists.
 
 		Raises:
-			frappe.ValidationError: If duplicate channel rows are detected.
+			frappe.ValidationError: If channel is missing, invalid, or duplicate rows
+				are detected.
 
 		Side effects:
 			None.
@@ -115,6 +118,8 @@ class Broadcast(Document):
 			channel = row.get("channel")
 			if not channel:
 				frappe.throw(_("Channel is required on each channel row."))
+			if channel not in CHANNELS:
+				frappe.throw(_("Invalid channel {0}.").format(channel))
 			if channel in seen_channels:
 				frappe.throw(_("Channel {0} cannot be added more than once.").format(channel))
 			seen_channels.add(channel)
@@ -154,7 +159,7 @@ class Broadcast(Document):
 					continue
 				for fieldname in fields:
 					val = row.get(fieldname)
-					if val not in (None, "", 0, 0.0):
+					if val not in (None, "", 0, 0.0, "0"):
 						label = child_meta.get_label(fieldname) or fieldname
 						frappe.throw(
 							_("Field {0} ({1}) is not allowed for channel {2}.").format(
@@ -193,7 +198,7 @@ class Broadcast(Document):
 			None.
 		"""
 		if self.products:
-			has_whatsapp = any(row.get("channel") == "WhatsApp" for row in self.channels or [])
+			has_whatsapp = any(row.get("channel") == CHANNEL_WHATSAPP for row in self.channels or [])
 			if not has_whatsapp:
 				p_label = self.meta.get_label("products") or "Products"
 				frappe.throw(_("{0} are only allowed when a WhatsApp channel is present.").format(p_label))
@@ -208,7 +213,7 @@ class Broadcast(Document):
 		Side effects:
 			None.
 		"""
-		if self.status == "Scheduled":
+		if self.status == STATUS_SCHEDULED:
 			st_label = self.meta.get_label("scheduled_time") or "Scheduled Time"
 			if not self.scheduled_time:
 				frappe.throw(_("{0} is required when status is Scheduled.").format(st_label))

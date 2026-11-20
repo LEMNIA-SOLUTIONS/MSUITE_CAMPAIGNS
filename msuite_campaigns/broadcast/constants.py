@@ -78,3 +78,9 @@ BROADCAST_ADMIN_ROLES: tuple[str, ...] = ("System Manager", "MSuite Admin", "Cam
 
 BROADCAST_READ_ALL_ROLES: tuple[str, ...] = BROADCAST_ADMIN_ROLES + ("MSuite Viewer",)
 
+CHANNEL_WHATSAPP: str = "WhatsApp"
+CHANNEL_EMAIL: str = "Email"
+CHANNEL_SMS: str = "SMS"
+
+STATUS_SCHEDULED: str = "Scheduled"
+
