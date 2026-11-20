@@ -6,3 +6,5 @@
 # Patches added in this section will be executed after doctypes are migrated
 msuite_campaigns.patches.campaign_compact_insight_rows
 msuite_campaigns.patches.trim_campaign_names
+msuite_campaigns.patches.migrate_bulk_to_broadcast
+

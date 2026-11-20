@@ -98,4 +98,10 @@ STATUS_PARTIALLY_FAILED: str = "Partially Failed"
 STATUS_FAILED: str = "Failed"
 STATUS_CANCELLED: str = "Cancelled"
 
+# Task 14: Data migration constants
+MIGRATION_BATCH: int = 200
+LEGACY_LIST_DOCTYPES: tuple[str, ...] = ("Audience", "WhatsApp Recipient List", "Email Recipient List")
+LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = ("Bulk WhatsApp Message", "Bulk Email Message", "Bulk SMS Message")
+
+
 
