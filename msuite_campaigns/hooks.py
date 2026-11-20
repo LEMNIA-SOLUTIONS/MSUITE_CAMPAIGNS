@@ -35,7 +35,21 @@ msuite_home_recent = {
 # This app's plan limits, read by msuite_core.services.plans.plan_enforcer.
 msuite_plan_gates = ["msuite_campaigns.audience.plan_gates.GATES"]
 
+has_permission = {
+	"Broadcast": "msuite_campaigns.broadcast.permissions.has_permission",
+	"Broadcast Recipient": "msuite_campaigns.broadcast.permissions.recipient_has_permission",
+}
+
+permission_query_conditions = {
+	"Broadcast": "msuite_campaigns.broadcast.permissions.broadcast_query_conditions",
+	"Broadcast Recipient": "msuite_campaigns.broadcast.permissions.recipient_query_conditions",
+}
+
 doc_events = {
+	"Broadcast": {
+		"before_insert": f"{PE}.check_broadcast",
+		"before_save": f"{PE}.check_broadcast",
+	},
 	# Unified audience — routes through the shared gate dispatcher
 	# rather than its own function (see audience/plan_gates.py).
 	"Audience": {

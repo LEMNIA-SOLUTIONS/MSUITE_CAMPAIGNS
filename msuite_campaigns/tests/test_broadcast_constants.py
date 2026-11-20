@@ -190,3 +190,31 @@ class TestBroadcastConstants(unittest.TestCase):
 		Side effects: None.
 		"""
 		self.assertEqual(RECIPIENT_INSERT_BATCH, 1000)
+
+	def test_channel_roles_and_admin_roles_defined(self):
+		"""Validate CHANNEL_ROLES, BROADCAST_ADMIN_ROLES, and BROADCAST_READ_ALL_ROLES.
+
+		Params: None.
+		Returns: None.
+		Raises: AssertionError if constants do not match specification.
+		Side effects: None.
+		"""
+		from msuite_campaigns.broadcast.constants import (
+			BROADCAST_ADMIN_ROLES,
+			BROADCAST_READ_ALL_ROLES,
+			CHANNEL_ROLES,
+		)
+
+		expected_channel_roles = {
+			"WhatsApp": ("WhatsApp Manager", "WhatsApp User"),
+			"Email": ("Email Manager", "Email User"),
+			"SMS": ("SMS Manager", "SMS User"),
+		}
+		self.assertEqual(CHANNEL_ROLES, expected_channel_roles)
+
+		expected_admin_roles = ("System Manager", "MSuite Admin", "Campaign Manager")
+		self.assertEqual(BROADCAST_ADMIN_ROLES, expected_admin_roles)
+
+		expected_read_all = expected_admin_roles + ("MSuite Viewer",)
+		self.assertEqual(BROADCAST_READ_ALL_ROLES, expected_read_all)
+

@@ -67,3 +67,14 @@ RECIPIENT_STATUS_RANK: dict[str, int] = {
 }
 
 RECIPIENT_INSERT_BATCH: int = 1000
+
+CHANNEL_ROLES: dict[str, tuple[str, ...]] = {
+	"WhatsApp": ("WhatsApp Manager", "WhatsApp User"),
+	"Email": ("Email Manager", "Email User"),
+	"SMS": ("SMS Manager", "SMS User"),
+}
+
+BROADCAST_ADMIN_ROLES: tuple[str, ...] = ("System Manager", "MSuite Admin", "Campaign Manager")
+
+BROADCAST_READ_ALL_ROLES: tuple[str, ...] = BROADCAST_ADMIN_ROLES + ("MSuite Viewer",)
+
