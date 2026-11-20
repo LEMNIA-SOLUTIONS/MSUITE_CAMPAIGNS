@@ -14,6 +14,7 @@ from msuite_campaigns.broadcast.constants import (
 	BROADCAST_STATUSES,
 	CHANNEL_STATUSES,
 	CHANNELS,
+	RECIPIENT_INSERT_BATCH,
 )
 
 # Required fields per channel (fieldname, label lookup key)
@@ -233,3 +234,26 @@ class Broadcast(Document):
 			if row.get("channel") == channel:
 				return row
 		return None
+
+	def on_trash(self) -> None:
+		"""Delete associated Broadcast Recipient rows in batches.
+
+		Deletes recipients belonging to this broadcast in chunks of
+		RECIPIENT_INSERT_BATCH to prevent locking or memory pressure.
+
+		Raises:
+			None.
+
+		Side effects:
+			Deletes rows from tabBroadcast Recipient.
+		"""
+		while True:
+			recipient_names = frappe.get_all(
+				"Broadcast Recipient",
+				filters={"broadcast": self.name},
+				pluck="name",
+				limit=RECIPIENT_INSERT_BATCH,
+			)
+			if not recipient_names:
+				break
+			frappe.db.delete("Broadcast Recipient", {"name": ["in", recipient_names]})
