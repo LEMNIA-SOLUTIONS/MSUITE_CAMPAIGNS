@@ -78,6 +78,12 @@ BROADCAST_ADMIN_ROLES: tuple[str, ...] = ("System Manager", "MSuite Admin", "Cam
 
 BROADCAST_READ_ALL_ROLES: tuple[str, ...] = BROADCAST_ADMIN_ROLES + ("MSuite Viewer",)
 
+SEND_CHUNK_SIZE: int = 500
+SEND_QUEUE: str = "long"
+SEND_TIMEOUT: int = 4000
+SENDABLE_RECIPIENT_STATUSES: tuple[str, ...] = ("Queued", "Retrying")
+
+
 CHANNEL_WHATSAPP: str = "WhatsApp"
 CHANNEL_EMAIL: str = "Email"
 CHANNEL_SMS: str = "SMS"
