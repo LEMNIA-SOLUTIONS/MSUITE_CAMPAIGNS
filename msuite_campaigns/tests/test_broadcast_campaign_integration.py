@@ -12,7 +12,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from msuite_campaigns.campaign.api.v1 import composer
-from msuite_campaigns.campaign.api.v1.calendar import get_calendar_events
+from msuite_campaigns.campaign.api.v1.calendar import get_calendar_events, reschedule_event
 from msuite_campaigns.campaign.api.v1.composer import (
 	delete_campaign,
 	duplicate_campaign,
@@ -29,6 +29,30 @@ from msuite_campaigns.campaign.services.analytics import get_campaign_dashboard
 
 class TestBroadcastCampaignIntegration(IntegrationTestCase):
 	"""Test Broadcast integration with Campaign composer, calendar, and analytics."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		if not frappe.db.exists("WhatsApp Account", "WA-ACC-001"):
+			frappe.db.sql(
+				"INSERT INTO `tabWhatsApp Account` (name, account_name, status, creation, modified, modified_by, owner) "
+				"VALUES ('WA-ACC-001', 'WA-ACC-001', 'Active', NOW(), NOW(), 'Administrator', 'Administrator')"
+			)
+		if not frappe.db.exists("WhatsApp Templates", "tpl_wa_001"):
+			frappe.db.sql(
+				"INSERT INTO `tabWhatsApp Templates` (name, template_name, whatsapp_account, status, category, language, creation, modified, modified_by, owner) "
+				"VALUES ('tpl_wa_001', 'tpl_wa_001', 'WA-ACC-001', 'APPROVED', 'MARKETING', 'en', NOW(), NOW(), 'Administrator', 'Administrator')"
+			)
+		frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		frappe.set_user("Administrator")
+		frappe.db.sql("DELETE FROM `tabWhatsApp Templates` WHERE name = 'tpl_wa_001'")
+		frappe.db.sql("DELETE FROM `tabWhatsApp Account` WHERE name = 'WA-ACC-001'")
+		frappe.db.commit()
+		super().tearDownClass()
 
 	def setUp(self):
 		super().setUp()
@@ -352,16 +376,12 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 			],
 		)
 
-		# Calendar event should be created via doc_events hook on save/insert
+		# Calendar event should be created via after_insert doc_events hook on save/insert
 		ev_name = frappe.db.get_value(
 			"Campaign Calendar Event",
 			{"event_type": "WhatsApp Message", "source_name": broadcast.name},
 			"name",
 		)
-		if not ev_name:
-			# Fall back to explicit sync_from_source if doc_events not fired in test
-			ev_name = sync_from_source("Broadcast", broadcast.name)
-
 		self.assertTrue(bool(ev_name))
 		self.cleanup_events.append(ev_name)
 
@@ -370,18 +390,104 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertEqual(ev.status, "Draft")
 		self.assertEqual(ev.color_hint, "wa-draft")
 
-		# Update status to Scheduled
+		# Update status to Scheduled via save (exercising on_update doc_events hook)
 		broadcast.status = "Scheduled"
 		broadcast.save(ignore_permissions=True)
-		sync_from_source("Broadcast", broadcast.name)
 
 		ev.reload()
 		self.assertEqual(ev.status, "Scheduled")
 		self.assertEqual(ev.color_hint, "wa-scheduled")
 
-		# Trash broadcast -> event purged
-		purge_source("Broadcast", broadcast.name)
+		# Trash broadcast via frappe.delete_doc -> on_trash doc_events hook purges calendar event
+		self.assertTrue(frappe.db.exists("Campaign Calendar Event", ev_name))
+		frappe.delete_doc("Broadcast", broadcast.name)
+		self.assertFalse(frappe.db.exists("Broadcast", broadcast.name))
 		self.assertFalse(frappe.db.exists("Campaign Calendar Event", ev_name))
+
+	def test_reschedule_broadcast_calendar_event(self):
+		"""reschedule_event moves scheduled_time for Broadcast, rejects non-Draft/Scheduled, and checks write permission."""
+		broadcast = self._make_broadcast(
+			title="Reschedule WA Broadcast",
+			status="Draft",
+			scheduled_time="2026-12-01 10:00:00",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
+				}
+			],
+		)
+		ev_name = frappe.db.get_value(
+			"Campaign Calendar Event",
+			{"event_type": "WhatsApp Message", "source_name": broadcast.name},
+			"name",
+		)
+		self.assertTrue(bool(ev_name))
+		self.cleanup_events.append(ev_name)
+
+		# 1. Moves scheduled_time on Draft
+		new_time = "2026-12-05 14:00:00"
+		res = reschedule_event(
+			event_type="WhatsApp Message",
+			source_name=broadcast.name,
+			start_date=new_time,
+			end_date=new_time,
+		)
+		self.assertEqual(str(res.get("start_date")), new_time)
+		broadcast.reload()
+		self.assertEqual(str(broadcast.scheduled_time), new_time)
+
+		# Moves scheduled_time on Scheduled
+		broadcast.status = "Scheduled"
+		broadcast.save(ignore_permissions=True)
+		future_time = "2026-12-10 16:00:00"
+		res_sched = reschedule_event(
+			event_type="WhatsApp Message",
+			source_name=broadcast.name,
+			start_date=future_time,
+			end_date=future_time,
+		)
+		self.assertEqual(str(res_sched.get("start_date")), future_time)
+		broadcast.reload()
+		self.assertEqual(str(broadcast.scheduled_time), future_time)
+
+		# 2. Rejects Broadcast that is not Draft/Scheduled
+		broadcast.status = "Completed"
+		broadcast.save(ignore_permissions=True)
+		with self.assertRaises(frappe.ValidationError):
+			reschedule_event(
+				event_type="WhatsApp Message",
+				source_name=broadcast.name,
+				start_date="2026-12-15 10:00:00",
+				end_date="2026-12-15 10:00:00",
+			)
+
+		# 3. Permission denied for user without write permission
+		broadcast.status = "Draft"
+		broadcast.save(ignore_permissions=True)
+
+		test_user = "test-no-perm@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc({
+				"doctype": "User",
+				"email": test_user,
+				"first_name": "NoPerm",
+				"send_welcome_email": 0,
+			}).insert(ignore_permissions=True)
+
+		frappe.set_user(test_user)
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				reschedule_event(
+					event_type="WhatsApp Message",
+					source_name=broadcast.name,
+					start_date="2026-12-20 10:00:00",
+					end_date="2026-12-20 10:00:00",
+				)
+		finally:
+			frappe.set_user("Administrator")
 
 	def test_calendar_skipped_for_email_only_broadcast(self):
 		"""Broadcast without a WhatsApp channel is skipped from calendar sync."""
