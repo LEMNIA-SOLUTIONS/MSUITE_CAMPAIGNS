@@ -80,7 +80,7 @@ class TestAiCallChannel(IntegrationTestCase):
 				patch("frappe.db.get_value", return_value="Running"), patch("frappe.db.commit"):
 			out = hub.retry_campaign("MC-1")
 		adapter["run"].assert_called_once_with("AICB-1")
-		self.assertEqual(out["ai_call"]["outcome"], "fired")
+		self.assertEqual(out["channels"]["ai_call"]["outcome"], "fired")
 
 
 class TestAudienceReachForCalls(IntegrationTestCase):
