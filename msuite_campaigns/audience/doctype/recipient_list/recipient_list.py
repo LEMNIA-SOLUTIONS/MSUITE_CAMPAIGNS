@@ -146,8 +146,10 @@ class RecipientList(Document):
 			int: Number of contacts imported and added.
 
 		Raises:
+			frappe.PermissionError: If caller lacks write permission.
 			frappe.ValidationError: If configuration or selected fields are invalid.
 		"""
+		self.check_permission("write")
 		if not self.import_from_doctype or not self.doctype_to_import:
 			frappe.throw(_("Enable 'Import From DocType' and pick a DocType first."))
 		if not (self.phone_field or self.email_field):

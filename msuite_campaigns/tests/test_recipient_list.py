@@ -321,6 +321,50 @@ class TestRecipientList(IntegrationTestCase):
 		self.assertFalse(can_create)
 		self.assertFalse(can_write)
 
+	def test_import_from_linked_doctype_requires_write_permission(self):
+		"""Calling import_from_linked_doctype without write permission raises PermissionError."""
+		rl = self._make_list("ImportPermTest")
+		test_user_email = f"viewer_{frappe.generate_hash(length=6)}@example.com"
+		user = frappe.get_doc({
+			"doctype": "User",
+			"email": test_user_email,
+			"first_name": "Viewer",
+			"roles": [{"role": "MSuite Viewer"}],
+		}).insert(ignore_permissions=True)
+		self.cleanup_users.append(user.name)
+
+		frappe.set_user(user.name)
+		try:
+			rl_user = frappe.get_doc("Recipient List", rl.name)
+			with self.assertRaises(frappe.PermissionError):
+				rl_user.import_from_linked_doctype()
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_plan_gate_recipient_list_size(self):
+		"""Adding contacts beyond campaigns_audience_size limit raises ValidationError."""
+		from msuite_campaigns.audience.plan_gates import check_recipient_list_size_gate
+
+		rl = self._make_list("GateTest")
+		rl.append("contacts", {
+			"full_name": "Contact 1",
+			"raw_phone": "+919876543210",
+			"phone_e164": "+919876543210",
+		})
+		rl.append("contacts", {
+			"full_name": "Contact 2",
+			"raw_phone": "+919876543211",
+			"phone_e164": "+919876543211",
+		})
+
+		with patch("msuite_campaigns.audience.plan_gates.is_feature_in_plan", return_value=True):
+			with patch("msuite_campaigns.audience.plan_gates.get_feature_limit", return_value=1):
+				with self.assertRaises(frappe.ValidationError):
+					check_recipient_list_size_gate(rl)
+
+			with patch("msuite_campaigns.audience.plan_gates.get_feature_limit", return_value=5):
+				check_recipient_list_size_gate(rl)
+
 	def test_import_stays_under_one_query_per_chunk(self):
 		"""Syncing contacts against tabContact must batch queries in chunks, not query per row."""
 		rl = self._make_list("ChunkTest")
@@ -366,10 +410,10 @@ class TestRecipientList(IntegrationTestCase):
 			"doctype": "Contact",
 			"first_name": "RL Consent",
 			"last_name": "Test",
-			"mobile_no": phone,
-			"phone_e164": phone,
 			"unsubscribed_whatsapp": 0,
-		}).insert(ignore_permissions=True)
+		})
+		c.add_phone(phone, is_primary_mobile_no=1)
+		c.insert(ignore_permissions=True)
 		self.cleanup_contacts.append(c.name)
 
 		rl = self._make_list("RLConsentTest")

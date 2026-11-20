@@ -56,7 +56,6 @@ doc_events = {
 		"on_trash": f"{_CCE}.on_source_delete",
 	},
 	"Contact": {
-		"before_validate": "msuite_campaigns.audience.services.contact_normalize.normalize_contact",
 		"validate": "msuite_campaigns.audience.services.contact_normalize.normalize_contact",
 	},
 }
