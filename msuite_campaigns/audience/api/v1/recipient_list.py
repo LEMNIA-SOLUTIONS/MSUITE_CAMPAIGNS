@@ -312,7 +312,20 @@ def get_contacts(
 		start=start_val,
 		page_length=limit_val,
 	)
-	total = frappe.db.count(CHILD_DOCTYPE, filters)
+	if or_filters:
+		from frappe.query_builder.functions import Count
+
+		total = int(
+			frappe.qb.get_query(
+				table=CHILD_DOCTYPE,
+				filters=filters,
+				or_filters=or_filters,
+				fields=Count("*"),
+			).run()[0][0]
+			or 0
+		)
+	else:
+		total = frappe.db.count(CHILD_DOCTYPE, filters)
 	return {"rows": rows, "total": total}
 
 
@@ -567,6 +580,8 @@ def fetch_doctype_contacts(
 
 	parsed_filters = _loads(filters, {})
 	limit_val = max(0, int(limit or 0))
+	if limit_val > 0:
+		limit_val = min(limit_val, MAX_LIST_LIMIT)
 
 	rows = frappe.get_list(
 		doctype_to_import,

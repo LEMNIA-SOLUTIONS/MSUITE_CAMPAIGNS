@@ -402,6 +402,33 @@ class TestRecipientListApi(IntegrationTestCase):
 		self.assertEqual(len(invalid_p["rows"]), 1)
 		self.assertEqual(invalid_p["rows"][0]["name"], first_c.name)
 
+	def test_get_contacts_search_pagination_total(self):
+		"""get_contacts total must equal number of matches when search is set, across pages."""
+		contacts = [
+			{"full_name": "Alice Smith", "raw_phone": "9876543200", "raw_email": "alice1@example.com"},
+			{"full_name": "Bob Jones", "raw_phone": "9876543201", "raw_email": "bob@example.com"},
+			{"full_name": "Alice Cooper", "raw_phone": "9876543202", "raw_email": "alice2@example.com"},
+			{"full_name": "Charlie Brown", "raw_phone": "9876543203", "raw_email": "charlie@example.com"},
+			{"full_name": "Alice Wonderland", "raw_phone": "9876543204", "raw_email": "alice3@example.com"},
+		]
+		rl = self._create_recipient_list("SearchTotalTest", contacts)
+
+		# Search matches 3 out of 5 contacts ("Alice")
+		# Page 1: start=0, page_length=2
+		p1 = rl_api.get_contacts(rl.name, search="Alice", start=0, page_length=2)
+		self.assertEqual(len(p1["rows"]), 2)
+		self.assertEqual(p1["total"], 3, "Total must reflect search matches (3), not all list contacts (5)")
+
+		# Page 2: start=2, page_length=2
+		p2 = rl_api.get_contacts(rl.name, search="Alice", start=2, page_length=2)
+		self.assertEqual(len(p2["rows"]), 1)
+		self.assertEqual(p2["total"], 3)
+
+		# Page 3: over-end start=4, page_length=2
+		p3 = rl_api.get_contacts(rl.name, search="Alice", start=4, page_length=2)
+		self.assertEqual(len(p3["rows"]), 0)
+		self.assertEqual(p3["total"], 3)
+
 	# ── get_reachable_contacts Tests ────────────────────────────────────
 
 	def test_get_reachable_contacts(self):
@@ -484,6 +511,29 @@ class TestRecipientListApi(IntegrationTestCase):
 		# Unreadable or disallowed DocType must raise PermissionError
 		with self.assertRaises(frappe.PermissionError):
 			rl_api.fetch_doctype_contacts("Social Post")
+
+	def test_fetch_doctype_contacts_limit_cap(self):
+		"""fetch_doctype_contacts must clamp limit to MAX_LIST_LIMIT when positive and exceeding cap."""
+		with patch("frappe.get_list", return_value=[]) as mock_get_list:
+			# Positive limit above cap must be clamped to MAX_LIST_LIMIT
+			rl_api.fetch_doctype_contacts("Contact", limit=rl_api.MAX_LIST_LIMIT + 500)
+			contact_calls = [c for c in mock_get_list.call_args_list if c.args and c.args[0] == "Contact"]
+			self.assertTrue(contact_calls)
+			self.assertEqual(contact_calls[-1].kwargs.get("limit"), rl_api.MAX_LIST_LIMIT)
+
+		with patch("frappe.get_list", return_value=[]) as mock_get_list:
+			# Limit below cap remains unchanged
+			rl_api.fetch_doctype_contacts("Contact", limit=50)
+			contact_calls = [c for c in mock_get_list.call_args_list if c.args and c.args[0] == "Contact"]
+			self.assertTrue(contact_calls)
+			self.assertEqual(contact_calls[-1].kwargs.get("limit"), 50)
+
+		with patch("frappe.get_list", return_value=[]) as mock_get_list:
+			# Zero limit remains 0 (meaning all)
+			rl_api.fetch_doctype_contacts("Contact", limit=0)
+			contact_calls = [c for c in mock_get_list.call_args_list if c.args and c.args[0] == "Contact"]
+			self.assertTrue(contact_calls)
+			self.assertEqual(contact_calls[-1].kwargs.get("limit"), 0)
 
 	def test_file_preview_parse_and_import(self):
 		"""preview_file, parse_file_rows, and import_contacts handle file parsing adapter calls."""
