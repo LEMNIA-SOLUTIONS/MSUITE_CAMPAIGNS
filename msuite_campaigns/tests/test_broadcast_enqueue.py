@@ -110,11 +110,11 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		)
 		first_name = recs[0].name
 		last_name = recs[-1].name
+		rec_by_addr = {r.address: r.name for r in recs}
 
-		# Mark the second recipient as Sent
-		frappe.db.set_value("Broadcast Recipient", recs[1].name, "status", "Sent", update_modified=False)
-		# Mark the third recipient as Retrying
-		frappe.db.set_value("Broadcast Recipient", recs[2].name, "status", "Retrying", update_modified=False)
+		# Mark +919822200002 as Sent (non-sendable) and +919822200003 as Retrying (sendable)
+		frappe.db.set_value("Broadcast Recipient", rec_by_addr["+919822200002"], "status", "Sent", update_modified=False)
+		frappe.db.set_value("Broadcast Recipient", rec_by_addr["+919822200003"], "status", "Retrying", update_modified=False)
 
 		send_calls = []
 
@@ -175,6 +175,7 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		)
 		first_name = recs[0].name
 		last_name = recs[-1].name
+		rec_by_addr = {r.address: r.name for r in recs}
 
 		def fake_send_one(broadcast_doc, channel_row, recipient_dict):
 			if recipient_dict["address"] == "+919844400001":
@@ -192,18 +193,18 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		self.assertEqual(res["failed"], 1)
 		self.assertFalse(res["stopped"])
 
-		# Verify DB status for the failed recipient
+		# Verify DB status for the failed recipient (+919844400001)
 		failed_rec = frappe.db.get_value(
 			"Broadcast Recipient",
-			recs[0].name,
+			rec_by_addr["+919844400001"],
 			["status", "failure_reason"],
 			as_dict=True,
 		)
 		self.assertEqual(failed_rec.status, "Failed")
 		self.assertIn("WhatsApp API 500", failed_rec.failure_reason)
 
-		# Verify DB status for the successful recipient
-		succ_rec = frappe.db.get_value("Broadcast Recipient", recs[1].name, "status")
+		# Verify DB status for the successful recipient (+919844400002)
+		succ_rec = frappe.db.get_value("Broadcast Recipient", rec_by_addr["+919844400002"], "status")
 		self.assertEqual(succ_rec, "Queued")
 
 	def test_no_adapter_raises_clear_error(self):
