@@ -21,6 +21,20 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, getdate, today
 
+from msuite_campaigns.broadcast.constants import (
+	CHANNEL_EMAIL,
+	CHANNEL_SMS,
+	CHANNEL_WHATSAPP,
+	STATUS_CANCELLED,
+	STATUS_COMPLETED,
+	STATUS_DRAFT,
+	STATUS_FAILED,
+	STATUS_IN_PROGRESS,
+	STATUS_PARTIALLY_FAILED,
+	STATUS_PAUSED,
+	STATUS_QUEUED,
+	STATUS_SCHEDULED,
+)
 from msuite_campaigns.broadcast.permissions import permitted_channels
 
 MAX_PAGE_LENGTH: int = 100
@@ -108,7 +122,7 @@ def list_broadcasts(
 	if status and str(status).strip():
 		st = str(status).strip()
 		if st == "inProgress":
-			parsed_filters.append(["status", "in", ["Queued", "In Progress"]])
+			parsed_filters.append(["status", "in", [STATUS_QUEUED, STATUS_IN_PROGRESS]])
 		else:
 			parsed_filters.append(["status", "=", st])
 
@@ -150,8 +164,12 @@ def list_broadcasts(
 				except Exception:
 					pass
 
-	total_names = frappe.get_list("Broadcast", filters=parsed_filters, pluck="name", limit_page_length=0)
-	total = len(total_names)
+	total_res = frappe.get_list(
+		"Broadcast",
+		filters=parsed_filters,
+		fields=[{"COUNT": "name", "as": "total"}],
+	)
+	total = cint(total_res[0].get("total")) if total_res else 0
 
 	if total == 0 or start >= total:
 		return {"rows": [], "total": total}
@@ -208,13 +226,13 @@ def list_broadcasts(
 				continue
 			template_name = None
 			account_name = None
-			if ch["channel"] == "WhatsApp":
+			if ch["channel"] == CHANNEL_WHATSAPP:
 				template_name = ch.get("whatsapp_template")
 				account_name = ch.get("whatsapp_account")
-			elif ch["channel"] == "Email":
+			elif ch["channel"] == CHANNEL_EMAIL:
 				template_name = ch.get("email_template")
 				account_name = ch.get("email_account")
-			elif ch["channel"] == "SMS":
+			elif ch["channel"] == CHANNEL_SMS:
 				template_name = ch.get("sms_template")
 				account_name = ch.get("sms_account")
 
@@ -262,9 +280,13 @@ def get_broadcast_metrics() -> dict:
 	"""
 	frappe.has_permission("Broadcast", "read", throw=True)
 
-	rows = frappe.get_list("Broadcast", fields=["status"], limit_page_length=0)
+	rows = frappe.get_list(
+		"Broadcast",
+		fields=["status", {"COUNT": "name", "as": "count"}],
+		group_by="status",
+	)
 	metrics = {
-		"total": len(rows),
+		"total": 0,
 		"draft": 0,
 		"scheduled": 0,
 		"inProgress": 0,
@@ -275,18 +297,20 @@ def get_broadcast_metrics() -> dict:
 
 	for r in rows:
 		st = r.get("status")
-		if st == "Draft":
-			metrics["draft"] += 1
-		elif st == "Scheduled":
-			metrics["scheduled"] += 1
-		elif st in ("Queued", "In Progress"):
-			metrics["inProgress"] += 1
-		elif st == "Completed":
-			metrics["completed"] += 1
-		elif st in ("Failed", "Partially Failed"):
-			metrics["failed"] += 1
-		elif st == "Cancelled":
-			metrics["cancelled"] += 1
+		cnt = cint(r.get("count"))
+		metrics["total"] += cnt
+		if st == STATUS_DRAFT:
+			metrics["draft"] += cnt
+		elif st == STATUS_SCHEDULED:
+			metrics["scheduled"] += cnt
+		elif st in (STATUS_QUEUED, STATUS_IN_PROGRESS):
+			metrics["inProgress"] += cnt
+		elif st == STATUS_COMPLETED:
+			metrics["completed"] += cnt
+		elif st in (STATUS_FAILED, STATUS_PARTIALLY_FAILED):
+			metrics["failed"] += cnt
+		elif st == STATUS_CANCELLED:
+			metrics["cancelled"] += cnt
 
 	return metrics
 
@@ -317,7 +341,7 @@ def get_broadcast(name: str) -> dict:
 	user_channels = permitted_channels(frappe.session.user)
 	doc_dict["channels"] = [ch for ch in doc_dict.get("channels", []) if ch.get("channel") in user_channels]
 
-	if "WhatsApp" not in user_channels:
+	if CHANNEL_WHATSAPP not in user_channels:
 		doc_dict["products"] = []
 
 	channel_metrics: dict[str, Any] = {}
@@ -373,7 +397,7 @@ def save_broadcast(
 	if name:
 		frappe.has_permission("Broadcast", "write", doc=name, throw=True)
 		b_doc = frappe.get_doc("Broadcast", name)
-		if b_doc.status not in ("Draft", "Scheduled"):
+		if b_doc.status not in (STATUS_DRAFT, STATUS_SCHEDULED):
 			frappe.throw(
 				_("Cannot update broadcast with status '{0}'.").format(b_doc.status),
 				frappe.ValidationError,
@@ -386,7 +410,7 @@ def save_broadcast(
 		if "channels" in data:
 			b_doc.set("channels", [])
 			for ch in data["channels"]:
-				if ch.get("channel") != "WhatsApp":
+				if ch.get("channel") != CHANNEL_WHATSAPP:
 					ch.setdefault("variable_type", "")
 				b_doc.append("channels", ch)
 
@@ -401,7 +425,7 @@ def save_broadcast(
 		b_doc = frappe.new_doc("Broadcast")
 		b_doc.update(data)
 		for ch in b_doc.channels:
-			if ch.channel != "WhatsApp":
+			if ch.channel != CHANNEL_WHATSAPP:
 				ch.variable_type = ""
 		frappe.has_permission("Broadcast", "create", doc=b_doc, throw=True)
 		b_doc.insert()
@@ -452,7 +476,7 @@ def launch_broadcast(name: str, individual_rows: str = "[]") -> dict:
 	results: dict[str, str] = {}
 	for ch, val in (raw_results or {}).items():
 		if isinstance(val, dict):
-			results[ch] = val.get("status", "Queued")
+			results[ch] = val.get("status", STATUS_QUEUED)
 		else:
 			results[ch] = str(val)
 
@@ -608,7 +632,7 @@ def delete_broadcasts(names: str) -> dict:
 			continue
 
 		status = frappe.db.get_value("Broadcast", b_name, "status")
-		if status in ("Queued", "In Progress"):
+		if status in (STATUS_QUEUED, STATUS_IN_PROGRESS):
 			failed.append({
 				"name": b_name,
 				"reason": f"Cannot delete broadcast in status '{status}'.",
@@ -723,9 +747,15 @@ def get_broadcast_recipients(
 	frappe.has_permission("Broadcast", "read", doc=name, throw=True)
 	frappe.has_permission("Broadcast Recipient", "read", throw=True)
 
+	user_channels = permitted_channels(frappe.session.user)
+	target_channel = str(channel).strip() if channel and str(channel).strip() else ""
+
+	if target_channel and target_channel not in user_channels:
+		return {"rows": [], "total": 0}
+
 	filters: list[Any] = [["broadcast", "=", name]]
-	if channel and str(channel).strip():
-		filters.append(["channel", "=", str(channel).strip()])
+	if target_channel:
+		filters.append(["channel", "=", target_channel])
 	if status and str(status).strip():
 		filters.append(["status", "=", str(status).strip()])
 
@@ -776,14 +806,21 @@ def get_broadcast_recipients(
 	length = cint(length) if cint(length) > 0 else 50
 	length = min(length, MAX_PAGE_LENGTH)
 
-	total_names = frappe.get_list(
-		"Broadcast Recipient",
-		filters=filters,
-		or_filters=or_filters or None,
-		pluck="name",
-		limit_page_length=0,
-	)
-	total = len(total_names)
+	if target_channel and not status and not search:
+		ch_count = frappe.db.get_value(
+			"Broadcast Channel",
+			{"parent": name, "channel": target_channel},
+			"recipient_count",
+		)
+		total = cint(ch_count)
+	else:
+		total_res = frappe.get_list(
+			"Broadcast Recipient",
+			filters=filters,
+			or_filters=or_filters or None,
+			fields=[{"COUNT": "name", "as": "total"}],
+		)
+		total = cint(total_res[0].get("total")) if total_res else 0
 
 	if total == 0 or start >= total:
 		return {"rows": [], "total": total}
@@ -832,7 +869,7 @@ def clone_broadcast(name: str) -> dict:
 	new_doc.campaign = doc.campaign
 	new_doc.recipient_source = doc.recipient_source
 	new_doc.recipient_list = doc.recipient_list
-	new_doc.status = "Draft"
+	new_doc.status = STATUS_DRAFT
 	new_doc.scheduled_time = None
 	new_doc.launched_at = None
 	new_doc.launch_error = None
@@ -852,9 +889,9 @@ def clone_broadcast(name: str) -> dict:
 			"idx",
 		):
 			ch_dict.pop(k, None)
-		if ch_dict.get("channel") != "WhatsApp":
+		if ch_dict.get("channel") != CHANNEL_WHATSAPP:
 			ch_dict["variable_type"] = ""
-		ch_dict["status"] = "Draft"
+		ch_dict["status"] = STATUS_DRAFT
 		ch_dict["recipient_count"] = 0
 		ch_dict["sent_count"] = 0
 		ch_dict["delivered_count"] = 0

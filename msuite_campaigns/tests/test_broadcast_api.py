@@ -18,6 +18,17 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now_datetime, today
 
 from msuite_campaigns.broadcast.api.v1 import broadcast as broadcast_api
+from msuite_campaigns.broadcast.constants import (
+	CHANNEL_EMAIL,
+	CHANNEL_SMS,
+	CHANNEL_WHATSAPP,
+	STATUS_COMPLETED,
+	STATUS_DRAFT,
+	STATUS_FAILED,
+	STATUS_IN_PROGRESS,
+	STATUS_QUEUED,
+	STATUS_SCHEDULED,
+)
 from msuite_core.services.permissions.roles import (
 	CAMPAIGN_MANAGER,
 	EMAIL_USER,
@@ -280,32 +291,45 @@ class TestBroadcastApi(IntegrationTestCase):
 			"Mixed WA and Email",
 			channels=[
 				{
-					"channel": "WhatsApp",
+					"channel": CHANNEL_WHATSAPP,
 					"whatsapp_account": self.wa_account,
 					"whatsapp_template": self.wa_template,
-					"status": "Draft",
+					"status": STATUS_DRAFT,
+					"recipient_count": 1,
 				},
 				{
-					"channel": "Email",
+					"channel": CHANNEL_EMAIL,
 					"email_account": self.email_account,
 					"email_template": self.email_template,
-					"status": "Draft",
+					"status": STATUS_DRAFT,
+					"recipient_count": 1,
 				},
 			],
 		)
-		self._create_recipient(mixed.name, "WhatsApp", "+19876543210")
-		self._create_recipient(mixed.name, "Email", "mixed@example.com")
+		self._create_recipient(mixed.name, CHANNEL_WHATSAPP, "+19876543210")
+		self._create_recipient(mixed.name, CHANNEL_EMAIL, "mixed@example.com")
 
 		# WhatsApp User
 		frappe.set_user(self.user_wa)
 		wa_view = broadcast_api.get_broadcast(mixed.name)
 		channel_names = [ch["channel"] for ch in wa_view["channels"]]
-		self.assertIn("WhatsApp", channel_names)
-		self.assertNotIn("Email", channel_names)
+		self.assertIn(CHANNEL_WHATSAPP, channel_names)
+		self.assertNotIn(CHANNEL_EMAIL, channel_names)
 
+		# General recipient query filters via recipient_query_conditions
 		wa_recipients = broadcast_api.get_broadcast_recipients(mixed.name)
 		self.assertEqual(wa_recipients["total"], 1)
-		self.assertEqual(wa_recipients["rows"][0]["channel"], "WhatsApp")
+		self.assertEqual(wa_recipients["rows"][0]["channel"], CHANNEL_WHATSAPP)
+
+		# Single-channel query reads channel row's recipient_count
+		wa_single_ch = broadcast_api.get_broadcast_recipients(mixed.name, channel=CHANNEL_WHATSAPP)
+		self.assertEqual(wa_single_ch["total"], 1)
+		self.assertEqual(len(wa_single_ch["rows"]), 1)
+
+		# Unpermitted channel query returns 0 total and empty rows
+		wa_unpermitted = broadcast_api.get_broadcast_recipients(mixed.name, channel=CHANNEL_EMAIL)
+		self.assertEqual(wa_unpermitted["total"], 0)
+		self.assertEqual(len(wa_unpermitted["rows"]), 0)
 
 		# WhatsApp User lacks full permissions to write/mutate mixed broadcast
 		self.assertRaises(frappe.PermissionError, broadcast_api.launch_broadcast, mixed.name)
@@ -314,8 +338,8 @@ class TestBroadcastApi(IntegrationTestCase):
 		frappe.set_user(self.user_cm)
 		cm_view = broadcast_api.get_broadcast(mixed.name)
 		cm_channels = [ch["channel"] for ch in cm_view["channels"]]
-		self.assertIn("WhatsApp", cm_channels)
-		self.assertIn("Email", cm_channels)
+		self.assertIn(CHANNEL_WHATSAPP, cm_channels)
+		self.assertIn(CHANNEL_EMAIL, cm_channels)
 
 		cm_recipients = broadcast_api.get_broadcast_recipients(mixed.name)
 		self.assertEqual(cm_recipients["total"], 2)
@@ -696,3 +720,70 @@ class TestBroadcastApi(IntegrationTestCase):
 		self.assertEqual(ch["sent_count"], 0)
 		self.assertEqual(ch["delivered_count"], 0)
 		self.assertEqual(ch["failed_count"], 0)
+
+	def test_database_aggregation_for_totals_and_metrics(self):
+		"""Assert list_broadcasts, get_broadcast_metrics, and get_broadcast_recipients
+
+		use database-side aggregation and never perform unbounded queries with limit_page_length=0.
+		"""
+		frappe.set_user(self.user_cm)
+		b = self._create_broadcast(
+			"Aggregation Test Broadcast",
+			channels=[{
+				"channel": CHANNEL_WHATSAPP,
+				"whatsapp_account": self.wa_account,
+				"whatsapp_template": self.wa_template,
+				"status": STATUS_DRAFT,
+				"recipient_count": 5,
+			}],
+		)
+		for i in range(5):
+			self._create_recipient(b.name, CHANNEL_WHATSAPP, f"+199988800{i:02d}")
+
+		orig_get_list = frappe.get_list
+
+		def mock_get_list(*args, **kwargs):
+			doctype = args[0] if args else kwargs.get("doctype")
+			# 1. Assert limit_page_length=0 with pluck='name' is NEVER called
+			if kwargs.get("limit_page_length") == 0 and kwargs.get("pluck") == "name":
+				raise AssertionError(
+					f"Unbounded pluck query detected on {doctype}: "
+					f"limit_page_length=0 with pluck='name' is forbidden."
+				)
+			# 2. Assert queries without pagination have aggregate fields or group_by
+			if doctype in ("Broadcast", "Broadcast Recipient"):
+				fields = kwargs.get("fields") or []
+				is_aggregate = any("count" in str(f).lower() for f in fields)
+				has_group_by = bool(kwargs.get("group_by"))
+				limit = kwargs.get("limit_page_length") if "limit_page_length" in kwargs else kwargs.get("limit")
+				has_bounded_limit = limit is not None and limit > 0
+				if not is_aggregate and not has_group_by and not has_bounded_limit:
+					raise AssertionError(
+						f"Unbounded row scan detected on {doctype}: "
+						f"queries must use database aggregation, group_by, or pagination limit."
+					)
+			return orig_get_list(*args, **kwargs)
+
+		with patch.object(frappe, "get_list", side_effect=mock_get_list):
+			# 1. list_broadcasts uses count(name) aggregation
+			res_list = broadcast_api.list_broadcasts()
+			self.assertIn("rows", res_list)
+			self.assertGreaterEqual(res_list["total"], 1)
+
+			# 2. get_broadcast_metrics uses group_by status with count(name)
+			res_metrics = broadcast_api.get_broadcast_metrics()
+			self.assertIn("total", res_metrics)
+			self.assertGreaterEqual(res_metrics["total"], 1)
+
+			# 3. get_broadcast_recipients without channel uses count(name) aggregation
+			res_rec_all = broadcast_api.get_broadcast_recipients(b.name)
+			self.assertIn("rows", res_rec_all)
+			self.assertEqual(res_rec_all["total"], 5)
+
+			# 4. get_broadcast_recipients with filtered status uses count(name) aggregation
+			res_rec_filtered = broadcast_api.get_broadcast_recipients(b.name, status=STATUS_QUEUED)
+			self.assertEqual(res_rec_filtered["total"], 5)
+
+			# 5. get_broadcast_recipients with unfiltered channel reads recipient_count from channel row
+			res_rec_channel = broadcast_api.get_broadcast_recipients(b.name, channel=CHANNEL_WHATSAPP)
+			self.assertEqual(res_rec_channel["total"], 5)

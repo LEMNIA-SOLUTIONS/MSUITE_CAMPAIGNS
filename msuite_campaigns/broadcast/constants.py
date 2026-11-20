@@ -89,4 +89,13 @@ CHANNEL_EMAIL: str = "Email"
 CHANNEL_SMS: str = "SMS"
 
 STATUS_SCHEDULED: str = "Scheduled"
+STATUS_DRAFT: str = "Draft"
+STATUS_QUEUED: str = "Queued"
+STATUS_IN_PROGRESS: str = "In Progress"
+STATUS_PAUSED: str = "Paused"
+STATUS_COMPLETED: str = "Completed"
+STATUS_PARTIALLY_FAILED: str = "Partially Failed"
+STATUS_FAILED: str = "Failed"
+STATUS_CANCELLED: str = "Cancelled"
+
 
