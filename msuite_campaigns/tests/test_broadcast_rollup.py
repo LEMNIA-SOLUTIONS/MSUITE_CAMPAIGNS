@@ -376,8 +376,8 @@ class TestBroadcastRollup(IntegrationTestCase):
 		):
 			res = campaign_metrics(campaign_name)
 
-		# 2 broadcasts in the campaign -> get_doc("Broadcast") called exactly 2 times (once per broadcast, 0 times in channel_metrics)
-		self.assertEqual(get_doc_broadcast_count, 2)
+		# 2 broadcasts in the campaign -> get_doc("Broadcast") called 0 times (batch loaded in one query per I-03)
+		self.assertEqual(get_doc_broadcast_count, 0)
 		# Same campaign key -> aws_rollup.fetch called exactly 1 time
 		mock_fetch.assert_called_once_with(f"{campaign_name}__WhatsApp")
 		self.assertIn("WhatsApp", res)

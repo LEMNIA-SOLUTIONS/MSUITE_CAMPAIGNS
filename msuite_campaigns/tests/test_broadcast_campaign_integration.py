@@ -21,9 +21,12 @@ from msuite_campaigns.campaign.api.v1.composer import (
 	unlink_broadcast,
 )
 from msuite_campaigns.campaign.doctype.campaign_calendar_event.campaign_calendar_event import (
+	backfill_all,
 	purge_source,
 	sync_from_source,
 )
+from msuite_campaigns.broadcast.recipients import bulk_insert_recipients
+from msuite_campaigns.broadcast.rollup import campaign_metrics
 from msuite_campaigns.campaign.services.analytics import get_campaign_dashboard
 
 
@@ -112,8 +115,18 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 				}
 			]
 		for ch in channels:
-			if ch.get("channel") != "WhatsApp":
-				ch.setdefault("variable_type", "")
+			channel_name = ch.get("channel")
+			if channel_name == "WhatsApp":
+				ch.setdefault("whatsapp_account", "WA-ACC-001")
+				ch.setdefault("whatsapp_template", "tpl_wa_001")
+			elif channel_name == "Email":
+				ch.setdefault("email_account", "test@example.com")
+				ch.setdefault("email_template", "tpl_email_001")
+				ch["variable_type"] = ""
+			elif channel_name == "SMS":
+				ch.setdefault("sms_account", "SMS-ACC-001")
+				ch.setdefault("sms_template", "tpl_sms_001")
+				ch["variable_type"] = ""
 		payload = {
 			"doctype": "Broadcast",
 			"title": title,
@@ -136,8 +149,9 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 				"title": title,
 				"campaign": campaign,
 				"status": "Draft",
-				"template": "test_template_001",
+				"template": "tpl_wa_001",
 				"recipient_type": "Individual",
+				"recipients": [{"mobile_number": "+919876543210"}],
 			}
 		)
 		doc.flags.ignore_validate = True
@@ -316,39 +330,86 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertNotIn("Gamma Winter Sale", titles)
 
 	def test_analytics_sums_old_plus_new_without_double_counting(self):
-		"""Analytics sums old adapters and Broadcast metrics without double counting."""
-		campaign = self._make_campaign("Analytics Sum Campaign")
+		"""C-01 / I-05a: Analytics excludes migrated Broadcast while old doc exists, counts after deletion."""
+		campaign = self._make_campaign("Analytics Coexistence Campaign")
 
-		dummy_broadcast_metrics = {
-			"WhatsApp": {
-				"channel": "WhatsApp",
-				"label": "WhatsApp",
-				"blasts": 2,
-				"metrics": {
-					"sent": 100,
-					"delivered": 90,
-					"failed": 10,
-					"audience": 100,
-					"credits": 90.0,
-					"delivery_rate": 90.0,
-					"read": 80,
-				},
-				"engine": "standard",
-				"stale": False,
-				"retried": 0,
+		# Real old Bulk WhatsApp Message with sent_count = 1000
+		old_blast = frappe.get_doc(
+			{
+				"doctype": "Bulk WhatsApp Message",
+				"title": "Old Real WA Blast",
+				"campaign": campaign.name,
+				"status": "Completed",
+				"template": "tpl_wa_001",
+				"recipient_type": "Individual",
+				"recipient_count": 1000,
+				"sent_count": 1000,
 			}
-		}
+		)
+		old_blast.flags.ignore_validate = True
+		old_blast.insert(ignore_permissions=True, ignore_links=True, ignore_mandatory=True)
+		self.cleanup_blasts.append(old_blast.name)
 
-		with patch("msuite_campaigns.broadcast.rollup.campaign_metrics", return_value=dummy_broadcast_metrics):
-			dashboard = get_campaign_dashboard(campaign.name)
-			modules = dashboard.get("modules") or {}
-			self.assertIn("whatsapp", modules)
-			wa = modules["whatsapp"]
-			wa_metrics = wa.get("metrics") or {}
-			# The broadcast metrics must be present/summed
-			self.assertGreaterEqual(wa_metrics.get("sent", 0), 100)
-			self.assertGreaterEqual(wa_metrics.get("delivered", 0), 90)
-			self.assertGreaterEqual(wa_metrics.get("read", 0), 80)
+		# Migrated Broadcast (legacy_doctype & legacy_name point to old_blast)
+		migrated_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated WA Broadcast",
+			status="Completed",
+			legacy_doctype="Bulk WhatsApp Message",
+			legacy_name=old_blast.name,
+			total_recipients=1000,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Completed",
+					"delivery_engine": "Standard",
+					"recipient_count": 1000,
+					"sent_count": 1000,
+					"delivered_count": 950,
+				}
+			],
+		)
+
+		# Genuinely new Broadcast (sent 200)
+		new_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="New Genuinely WA Broadcast",
+			status="Completed",
+			total_recipients=200,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Completed",
+					"delivery_engine": "Standard",
+					"recipient_count": 200,
+					"sent_count": 200,
+					"delivered_count": 190,
+				}
+			],
+		)
+
+		# Dashboard shows 1200 sent, blasts 2 (not 2200 / 3)
+		dashboard = get_campaign_dashboard(campaign.name)
+		modules = dashboard.get("modules") or {}
+		self.assertIn("whatsapp", modules)
+		wa = modules["whatsapp"]
+		self.assertEqual(wa.get("totals", {}).get("sent"), 1200)
+		self.assertEqual(wa.get("blasts"), 2)
+
+		# After deleting the old doc, the migrated one counts (1000 + 200 = 1200 sent, 2 blasts)
+		frappe.delete_doc("Bulk WhatsApp Message", old_blast.name, force=True, ignore_permissions=True)
+		self.cleanup_blasts.remove(old_blast.name)
+
+		dashboard2 = get_campaign_dashboard(campaign.name)
+		modules2 = dashboard2.get("modules") or {}
+		self.assertIn("whatsapp", modules2)
+		wa2 = modules2["whatsapp"]
+		self.assertEqual(wa2.get("totals", {}).get("sent"), 1200)
+		self.assertEqual(wa2.get("blasts"), 2)
 
 	def test_analytics_survives_missing_rollup_module(self):
 		"""Analytics survives if broadcast rollup cannot be imported."""
@@ -514,3 +575,279 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 			"name",
 		)
 		self.assertIsNone(ev_name)
+
+	def test_calendar_coexistence_migrated_broadcast_suppressed(self):
+		"""C-02: Migrated Broadcast with existing legacy doc projects NO event; new projects one; reschedule works."""
+		campaign = self._make_campaign("Calendar Coexistence Campaign")
+
+		# Real legacy Bulk WhatsApp Message
+		legacy_blast = self._make_bulk_whatsapp(campaign.name, "Legacy WA Blast")
+		legacy_blast.scheduled_time = "2026-11-28 10:00:00"
+		legacy_blast.save(ignore_permissions=True)
+
+		# Upsert calendar event for legacy blast
+		legacy_ev = sync_from_source("Bulk WhatsApp Message", legacy_blast.name)
+		self.assertTrue(bool(legacy_ev))
+		self.cleanup_events.append(legacy_ev)
+
+		# Migrated Broadcast pointing to legacy_blast
+		migrated_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated Calendar Broadcast",
+			status="Draft",
+			scheduled_time="2026-11-28 10:00:00",
+			legacy_doctype="Bulk WhatsApp Message",
+			legacy_name=legacy_blast.name,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
+				}
+			],
+		)
+
+		# 1. Migrated Broadcast projects NO event
+		migrated_ev = frappe.db.get_value(
+			"Campaign Calendar Event",
+			{"event_type": "WhatsApp Message", "source_name": migrated_bc.name},
+			"name",
+		)
+		self.assertIsNone(migrated_ev)
+
+		# 2. backfill_all creates NO event for migrated Broadcast
+		backfill_all()
+		self.assertIsNone(
+			frappe.db.get_value(
+				"Campaign Calendar Event",
+				{"event_type": "WhatsApp Message", "source_name": migrated_bc.name},
+				"name",
+			)
+		)
+
+		# 3. Genuinely new Broadcast projects one event
+		new_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="New Calendar Broadcast",
+			status="Draft",
+			scheduled_time="2026-11-29 11:00:00",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
+				}
+			],
+		)
+		new_ev = frappe.db.get_value(
+			"Campaign Calendar Event",
+			{"event_type": "WhatsApp Message", "source_name": new_bc.name},
+			"name",
+		)
+		self.assertTrue(bool(new_ev))
+		self.cleanup_events.append(new_ev)
+
+		# 4. reschedule_event on the legacy event still works
+		res = reschedule_event(
+			event_type="WhatsApp Message",
+			source_name=legacy_blast.name,
+			start_date="2026-11-30 12:00:00",
+			end_date="2026-11-30 12:00:00",
+		)
+		self.assertEqual(str(res.get("start_date")), "2026-11-30 12:00:00")
+		legacy_blast.reload()
+		self.assertEqual(str(legacy_blast.scheduled_time), "2026-11-30 12:00:00")
+
+		# 5. After the legacy doc is gone, the Broadcast projects
+		frappe.delete_doc("Bulk WhatsApp Message", legacy_blast.name, force=True, ignore_permissions=True)
+		self.cleanup_blasts.remove(legacy_blast.name)
+
+		# Resync migrated broadcast
+		event_after_del = sync_from_source("Broadcast", migrated_bc.name)
+		self.assertTrue(bool(event_after_del))
+		self.cleanup_events.append(event_after_del)
+		ev_row = frappe.get_doc("Campaign Calendar Event", event_after_del)
+		self.assertEqual(ev_row.source_name, migrated_bc.name)
+
+	def test_duplicate_campaign_coexistence_and_individual_recipients(self):
+		"""I-01: duplicate_campaign skips migrated broadcast whose legacy blast is duplicated, and clones Individual recipients."""
+		campaign = self._make_campaign("Duplicate Coexistence Campaign")
+
+		# Real old Bulk WhatsApp Message
+		legacy_blast = self._make_bulk_whatsapp(campaign.name, "Legacy Blast For Duplicate")
+
+		# Migrated Broadcast pointing to legacy_blast
+		migrated_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated Copy Broadcast",
+			legacy_doctype="Bulk WhatsApp Message",
+			legacy_name=legacy_blast.name,
+		)
+
+		# Genuinely new Broadcast with recipient_source == "Individual"
+		new_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="New BC With Individual Recipients",
+			recipient_source="Individual",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
+				}
+			],
+		)
+		bulk_insert_recipients(
+			new_bc.name,
+			"WhatsApp",
+			[
+				{"address": "+15551111111", "recipient_name": "Alice", "status": "Sent", "provider_message_id": "prov-111"},
+				{"address": "+15552222222", "recipient_name": "Bob", "status": "Delivered", "provider_message_id": "prov-222"},
+			],
+		)
+		frappe.db.set_value("Broadcast Channel", {"parent": new_bc.name, "channel": "WhatsApp"}, "recipient_count", 2)
+		frappe.db.set_value("Broadcast", new_bc.name, "total_recipients", 2)
+
+		res = duplicate_campaign(campaign.name, duplicate_children=1)
+		new_campaign_name = res["name"]
+		self.cleanup_campaigns.append(new_campaign_name)
+
+		# Under new_campaign:
+		# 1. Bulk WhatsApp Message was duplicated (from legacy_blast)
+		cloned_blasts = frappe.get_all("Bulk WhatsApp Message", filters={"campaign": new_campaign_name}, pluck="name")
+		self.assertEqual(len(cloned_blasts), 1)
+		self.cleanup_blasts.extend(cloned_blasts)
+
+		# 2. Only new_bc was duplicated as Broadcast (migrated_bc was skipped)
+		cloned_bcs = frappe.get_all("Broadcast", filters={"campaign": new_campaign_name}, pluck="name")
+		self.assertEqual(len(cloned_bcs), 1)
+		cloned_bc = frappe.get_doc("Broadcast", cloned_bcs[0])
+		self.cleanup_broadcasts.append(cloned_bc.name)
+		self.assertEqual(cloned_bc.title, "New BC With Individual Recipients")
+
+		# 3. Recipients were cloned via bulk_insert_recipients with status Queued and no provider id
+		cloned_recipients = frappe.get_all(
+			"Broadcast Recipient",
+			filters={"broadcast": cloned_bc.name},
+			fields=["address", "recipient_name", "status", "provider_message_id"],
+			order_by="address asc",
+		)
+		self.assertEqual(len(cloned_recipients), 2)
+		self.assertEqual(cloned_recipients[0]["address"], "+15551111111")
+		self.assertEqual(cloned_recipients[0]["status"], "Queued")
+		self.assertFalse(cloned_recipients[0]["provider_message_id"])
+		self.assertEqual(cloned_recipients[1]["address"], "+15552222222")
+		self.assertEqual(cloned_recipients[1]["status"], "Queued")
+		self.assertFalse(cloned_recipients[1]["provider_message_id"])
+
+		# 4. total_recipients and channel recipient_count are set consistently
+		self.assertEqual(cloned_bc.total_recipients, 2)
+		ch_row = cloned_bc.channels[0]
+		self.assertEqual(ch_row.recipient_count, 2)
+		self.assertEqual(ch_row.status, "Draft")
+
+	def test_list_broadcasts_for_campaign_permission_isolated_email_user(self):
+		"""I-02: list_broadcasts_for_campaign enforces get_list permissions; Email-only user cannot see WhatsApp-only broadcast."""
+		campaign = self._make_campaign("Perm Picker Campaign")
+
+		# WhatsApp-only broadcast linked to campaign
+		wa_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="WA Only Broadcast",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
+				}
+			],
+		)
+
+		# Email-only broadcast linked to campaign
+		em_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Email Only Broadcast",
+			channels=[
+				{
+					"channel": "Email",
+					"email_account": "test@example.com",
+					"email_template": "tpl_email_001",
+					"status": "Draft",
+				}
+			],
+		)
+
+		test_user = "test-email-user-picker@example.com"
+		if not frappe.db.exists("User", test_user):
+			user_doc = frappe.get_doc({
+				"doctype": "User",
+				"email": test_user,
+				"first_name": "EmailOnlyUser",
+				"send_welcome_email": 0,
+				"roles": [{"role": "Email User"}],
+			}).insert(ignore_permissions=True)
+		else:
+			user_doc = frappe.get_doc("User", test_user)
+			user_doc.roles = []
+			user_doc.append("roles", {"role": "Email User"})
+			user_doc.save(ignore_permissions=True)
+
+		frappe.set_user(test_user)
+		try:
+			res = list_broadcasts_for_campaign(campaign=campaign.name)
+			current_broadcasts = res.get("current") or []
+			rows_names = [r["name"] for r in (res.get("rows") or [])]
+			# Email-only user must see em_bc, but NOT wa_bc
+			self.assertIn(em_bc.name, current_broadcasts)
+			self.assertNotIn(wa_bc.name, current_broadcasts)
+			self.assertNotIn(wa_bc.name, rows_names)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_rollup_campaign_metrics_constant_queries_no_get_doc_loop(self):
+		"""I-03: campaign_metrics executes no per-broadcast get_doc and uses a small constant number of queries."""
+		campaign = self._make_campaign("Rollup Query Count Campaign")
+
+		# Create 12 broadcasts under this campaign
+		for i in range(12):
+			self._make_broadcast(
+				campaign=campaign.name,
+				title=f"Broadcast {i}",
+				channels=[
+					{
+						"channel": "WhatsApp",
+						"delivery_engine": "Standard",
+						"recipient_count": 10,
+						"sent_count": 10,
+						"delivered_count": 9,
+						"read_count": 8,
+						"status": "Completed",
+					}
+				],
+			)
+
+		query_count = 0
+		orig_sql = frappe.db.sql
+
+		def count_sql(*args, **kwargs):
+			nonlocal query_count
+			query_count += 1
+			return orig_sql(*args, **kwargs)
+
+		with patch("frappe.db.sql", side_effect=count_sql), patch("frappe.get_doc") as mock_get_doc:
+			metrics = campaign_metrics(campaign.name)
+
+		# Must not call frappe.get_doc on Broadcast
+		for call in mock_get_doc.call_args_list:
+			self.assertNotEqual(call[0][0], "Broadcast", "get_doc should not be called for Broadcast")
+
+		# Total SQL queries must be a small constant (<= 5 queries, not ~36 queries)
+		self.assertLessEqual(query_count, 5, f"Expected small constant queries, got {query_count}")
+		self.assertIn("WhatsApp", metrics)
+		self.assertEqual(metrics["WhatsApp"]["metrics"]["audience"], 120)
+		self.assertEqual(metrics["WhatsApp"]["metrics"]["sent"], 120)
+		self.assertEqual(metrics["WhatsApp"]["blasts"], 12)

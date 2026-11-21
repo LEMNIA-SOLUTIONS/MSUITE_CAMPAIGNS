@@ -385,13 +385,13 @@ def list_broadcasts_for_campaign(campaign: str = "", search: str = "", limit: in
 
 	current = []
 	if campaign:
-		current = frappe.get_all("Broadcast", filters={"campaign": campaign}, pluck="name")
+		current = frappe.get_list("Broadcast", filters={"campaign": campaign}, pluck="name")
 
 	filters: dict = {}
 	if search:
 		filters = {"title": ["like", f"%{search}%"]}
 
-	raw = frappe.get_all(
+	raw = frappe.get_list(
 		"Broadcast",
 		filters=filters,
 		fields=["name", "title", "status", "scheduled_time", "total_recipients", "campaign", "modified"],
@@ -699,6 +699,7 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 
 		# C. Duplicate every Bulk WhatsApp Message under the campaign
 		# (1:N via Bulk WhatsApp Message.campaign).
+		old_blasts = []
 		if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
 			old_blasts = frappe.get_all("Bulk WhatsApp Message", filters={"campaign": name}, pluck="name")
 			for old_blast_name in old_blasts:
@@ -709,7 +710,7 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 				new_wa.sent_count = 0
 				new_wa.is_paused = 0
 				new_wa.scheduled_time = None
-				new_wa.insert(ignore_permissions=True)
+				new_wa.insert(ignore_permissions=True, ignore_links=True)
 
 		# D. Duplicate Email Campaigns
 		if frappe.db.exists("DocType", "Email Campaign"):
@@ -719,13 +720,21 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 				new_ec = frappe.copy_doc(old_ec)
 				new_ec.campaign_name = new_mc.name
 				new_ec.status = "Draft"
-				new_ec.insert(ignore_permissions=True)
+				new_ec.insert(ignore_permissions=True, ignore_links=True)
 
 		# E. Duplicate Broadcasts under the campaign
 		if frappe.db.exists("DocType", "Broadcast"):
 			old_broadcasts = frappe.get_all("Broadcast", filters={"campaign": name}, pluck="name")
 			for old_b_name in old_broadcasts:
 				old_b = frappe.get_doc("Broadcast", old_b_name)
+				# Do not duplicate a Broadcast that is the migrated copy of a legacy blast being duplicated
+				if old_b.legacy_doctype and old_b.legacy_name:
+					if (old_b.legacy_doctype == "Bulk WhatsApp Message" and old_b.legacy_name in old_blasts) or (
+						frappe.db.table_exists(old_b.legacy_doctype)
+						and frappe.db.exists(old_b.legacy_doctype, old_b.legacy_name)
+					):
+						continue
+
 				new_b = frappe.copy_doc(old_b)
 				new_b.campaign = new_mc.name
 				new_b.status = "Draft"
@@ -753,6 +762,55 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 					if getattr(ch, "channel", None) == "SMS":
 						ch.actual_credits = 0
 				new_b.insert(ignore_permissions=True, ignore_links=True)
+
+				# For recipient_source == "Individual", clone Broadcast Recipient rows via recipients.bulk_insert_recipients
+				if getattr(old_b, "recipient_source", None) == "Individual":
+					from msuite_campaigns.broadcast import recipients
+
+					old_recipients = frappe.get_all(
+						"Broadcast Recipient",
+						filters={"broadcast": old_b.name},
+						fields=["channel", "address", "recipient_name", "recipient_data", "source_contact"],
+					)
+					by_channel: dict[str, list[dict]] = {}
+					for r in old_recipients:
+						ch_name = r.get("channel")
+						if not ch_name:
+							continue
+						by_channel.setdefault(ch_name, []).append(
+							{
+								"address": r.get("address"),
+								"recipient_name": r.get("recipient_name"),
+								"recipient_data": r.get("recipient_data"),
+								"source_contact": r.get("source_contact"),
+								"status": "Queued",
+								"provider_message_id": None,
+							}
+						)
+
+					for ch_name, rows in by_channel.items():
+						recipients.bulk_insert_recipients(new_b.name, ch_name, rows)
+						ch_count = frappe.db.count(
+							"Broadcast Recipient", {"broadcast": new_b.name, "channel": ch_name}
+						)
+						ch_row_name = frappe.db.get_value(
+							"Broadcast Channel", {"parent": new_b.name, "channel": ch_name}, "name"
+						)
+						if ch_row_name:
+							frappe.db.set_value(
+								"Broadcast Channel", ch_row_name, "recipient_count", ch_count, update_modified=False
+							)
+
+					all_channel_counts = frappe.db.get_values(
+						"Broadcast Channel",
+						{"parent": new_b.name},
+						"recipient_count",
+						as_dict=True,
+					)
+					total_recipients = max([c.get("recipient_count") or 0 for c in all_channel_counts] or [0])
+					frappe.db.set_value(
+						"Broadcast", new_b.name, "total_recipients", total_recipients, update_modified=False
+					)
 
 	frappe.db.commit()
 	return _serialize(new_mc)

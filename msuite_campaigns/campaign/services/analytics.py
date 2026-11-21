@@ -533,6 +533,11 @@ def _merge_broadcast_metrics(modules: dict, broadcast_metrics: dict) -> dict:
 		tm = target.setdefault("metrics", {})
 		for m_key in ("sent", "delivered", "failed", "audience", "credits", "read"):
 			if m_key in bm:
+				if m_key not in tm:
+					if m_key in target.get("totals", {}):
+						tm[m_key] = target["totals"][m_key]
+					elif m_key == "audience" and "recipients" in target.get("totals", {}):
+						tm[m_key] = target["totals"]["recipients"]
 				tm[m_key] = (tm.get(m_key) or 0) + (bm.get(m_key) or 0)
 		sent = tm.get("sent") or 0
 		tm["delivery_rate"] = round((tm.get("delivered") or 0) / sent * 100, 1) if sent else 0

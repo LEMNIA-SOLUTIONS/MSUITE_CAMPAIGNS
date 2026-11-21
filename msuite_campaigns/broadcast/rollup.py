@@ -242,9 +242,13 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 	for each channel, deduplicating DynamoDB queries where appropriate, and merges results
 	into a single dictionary keyed by channel name.
 
-	Avoids N+1 document loads by reusing loaded Broadcast documents, and avoids redundant
-	external DynamoDB HTTP requests by caching fetch responses across channels sharing
-	the same campaign key.
+	Broadcasts that are migrated copies of legacy records (legacy_doctype and legacy_name
+	pointing to an existing legacy record) are excluded from aggregation to prevent double
+	counting against legacy adapters.
+
+	Avoids N+1 document loads by batching Broadcast and Broadcast Channel queries in bulk,
+	and avoids redundant external DynamoDB HTTP requests by caching fetch responses across
+	channels sharing the same campaign key.
 
 	Args:
 		campaign: Name of the Marketing Campaign document.
@@ -259,10 +263,66 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 	Side effects:
 		None.
 	"""
-	broadcast_names = frappe.get_all(
+	broadcasts = frappe.get_all(
 		"Broadcast",
 		filters={"campaign": campaign},
-		pluck="name",
+		fields=["name", "campaign", "legacy_doctype", "legacy_name"],
+	)
+
+	if not broadcasts:
+		return {}
+
+	# Batch check legacy existence to exclude migrated copies of existing legacy records (C-01)
+	legacy_map: dict[str, list[str]] = {}
+	for b in broadcasts:
+		dt = b.get("legacy_doctype")
+		nm = b.get("legacy_name")
+		if dt and nm:
+			legacy_map.setdefault(dt, []).append(nm)
+
+	existing_legacy: set[tuple[str, str]] = set()
+	for dt, names in legacy_map.items():
+		if frappe.db.table_exists(dt):
+			existing_names = set(
+				frappe.get_all(dt, filters={"name": ["in", names]}, pluck="name")
+			)
+			for nm in existing_names:
+				existing_legacy.add((dt, nm))
+
+	valid_broadcasts = [
+		b
+		for b in broadcasts
+		if not (
+			b.get("legacy_doctype")
+			and b.get("legacy_name")
+			and (b.get("legacy_doctype"), b.get("legacy_name")) in existing_legacy
+		)
+	]
+
+	if not valid_broadcasts:
+		return {}
+
+	valid_names = [b["name"] for b in valid_broadcasts]
+	broadcast_by_name = {b["name"]: b for b in valid_broadcasts}
+
+	# Fetch Broadcast Channel rows for all broadcasts of the campaign in ONE query (I-03)
+	channel_rows = frappe.get_all(
+		"Broadcast Channel",
+		filters={"parent": ["in", valid_names]},
+		fields=[
+			"name",
+			"parent",
+			"channel",
+			"delivery_engine",
+			"recipient_count",
+			"sent_count",
+			"delivered_count",
+			"failed_count",
+			"read_count",
+			"retry_count",
+			"actual_credits",
+			"estimated_credits",
+		],
 	)
 
 	results: dict[str, dict] = {}
@@ -271,36 +331,46 @@ def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
 	# Cache DynamoDB fetch responses per campaign_id to prevent redundant external HTTP calls
 	dynamo_cache: dict[str, Any] = {}
 
-	for b_name in broadcast_names:
-		broadcast_doc = frappe.get_doc("Broadcast", b_name)
-		for ch in broadcast_doc.channels or []:
-			channel_name = ch.channel
-			if not channel_name:
-				continue
+	for ch in channel_rows:
+		channel_name = ch.channel
+		if not channel_name:
+			continue
 
-			engine = (ch.delivery_engine or "AWS").lower()
-			dynamo_id = dynamo_campaign_id(broadcast_doc, channel_name)
+		b_name = ch.parent
+		b_info = broadcast_by_name.get(b_name)
+		if not b_info:
+			continue
 
-			dedup_aws = False
-			if engine == "aws":
-				if dynamo_id in seen_aws_dynamo_keys:
-					dedup_aws = True
-				else:
-					seen_aws_dynamo_keys.add(dynamo_id)
+		engine = (ch.delivery_engine or "AWS").lower()
+		proxy_doc = frappe._dict(
+			name=b_name,
+			campaign=b_info.get("campaign") or campaign,
+			legacy_name=b_info.get("legacy_name"),
+			channels=[ch],
+		)
 
-			m = channel_metrics(
-				b_name,
-				channel_name,
-				days=days,
-				broadcast_doc=broadcast_doc,
-				dynamo_cache=dynamo_cache,
-			)
+		dynamo_id = dynamo_campaign_id(proxy_doc, channel_name)
 
-			if channel_name not in results:
-				results[channel_name] = m
+		dedup_aws = False
+		if engine == "aws":
+			if dynamo_id in seen_aws_dynamo_keys:
+				dedup_aws = True
 			else:
-				results[channel_name] = _combine_channel_metrics(
-					results[channel_name], m, deduplicate_aws=dedup_aws
-				)
+				seen_aws_dynamo_keys.add(dynamo_id)
+
+		m = channel_metrics(
+			b_name,
+			channel_name,
+			days=days,
+			broadcast_doc=proxy_doc,
+			dynamo_cache=dynamo_cache,
+		)
+
+		if channel_name not in results:
+			results[channel_name] = m
+		else:
+			results[channel_name] = _combine_channel_metrics(
+				results[channel_name], m, deduplicate_aws=dedup_aws
+			)
 
 	return results

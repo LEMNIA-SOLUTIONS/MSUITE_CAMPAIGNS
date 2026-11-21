@@ -182,11 +182,16 @@ def _from_broadcast(doc) -> dict | None:
 	calendar (as event_type 'WhatsApp Message'). Broadcasts without
 	a WhatsApp channel return None and do not appear.
 
+	Broadcasts that are migrated copies of an existing legacy record
+	(legacy_doctype and legacy_name point to an existing legacy record)
+	are suppressed from projection while the legacy record exists.
+
 	Args:
 		doc: Broadcast Document instance.
 
 	Returns:
-		dict | None: Calendar event payload or None if WhatsApp channel absent.
+		dict | None: Calendar event payload or None if WhatsApp channel absent
+			or legacy source still exists.
 
 	Raises:
 		None.
@@ -194,6 +199,16 @@ def _from_broadcast(doc) -> dict | None:
 	Side effects:
 		None.
 	"""
+	legacy_doctype = getattr(doc, "legacy_doctype", None) or (
+		doc.get("legacy_doctype") if isinstance(doc, dict) else None
+	)
+	legacy_name = getattr(doc, "legacy_name", None) or (
+		doc.get("legacy_name") if isinstance(doc, dict) else None
+	)
+	if legacy_doctype and legacy_name:
+		if frappe.db.table_exists(legacy_doctype) and frappe.db.exists(legacy_doctype, legacy_name):
+			return None
+
 	channels = getattr(doc, "channels", []) or []
 	wa_row = None
 	for ch in channels:
