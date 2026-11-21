@@ -285,7 +285,13 @@ class Audience(Document):
 				# `rejection_breakdown`. Excluding it here keeps `preview()`
 				# and `build()` looking at the same set.
 				continue
-			if channel == "SMS":
+			if channel == "AI Call":
+				# A voice call reaches any valid line, landlines included. Opt-outs are the
+				# organisation's do-not-call list, which the dialler checks before every call
+				# (the voice backend marks those recipients "Do Not Call"); an audience has no
+				# organisation to check it against here.
+				pass
+			elif channel == "SMS":
 				if m.unsubscribed_sms or m.phone_type not in phone_validator.SMS_REACHABLE_TYPES:
 					continue
 			else:  # WhatsApp
@@ -323,6 +329,8 @@ class Audience(Document):
 				# Same desync guarded against in members_for() — status is
 				# Valid but the address field is empty.
 				bump("No phone number")
+			elif channel == "AI Call":
+				continue  # any valid phone can take a call (see members_for)
 			elif channel == "SMS" and m.unsubscribed_sms:
 				bump("Unsubscribed from SMS")
 			elif channel == "WhatsApp" and m.unsubscribed_whatsapp:
