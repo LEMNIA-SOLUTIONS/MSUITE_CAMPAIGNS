@@ -8,7 +8,9 @@ import frappe
 
 from msuite_campaigns.broadcast.constants import (
 	BROADCAST_ADMIN_ROLES,
+	BROADCAST_ALL_CHANNEL_ROLES,
 	BROADCAST_READ_ALL_ROLES,
+	CHANNEL_MANAGER_ROLES,
 	CHANNEL_ROLES,
 	CHANNELS,
 )
@@ -83,9 +85,10 @@ def _get_recipient_channel(doc) -> str | None:
 
 
 def permitted_channels(user: str | None = None) -> set[str]:
-	"""Return set of channels whose role the user holds; admin/read-all roles return all CHANNELS.
+	"""Return set of channels whose role the user holds; admin/read-all/all-channel roles return all CHANNELS.
 
 	Guest never has permitted channels (returns empty set).
+	Campaign User holds ALL channels for read/write/create.
 
 	Params:
 		user: User email or None (defaults to frappe.session.user).
@@ -105,7 +108,11 @@ def permitted_channels(user: str | None = None) -> set[str]:
 		return set()
 
 	user_roles = set(frappe.get_roles(user))
-	if user == "Administrator" or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES):
+	if (
+		user == "Administrator"
+		or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
+		or any(r in user_roles for r in BROADCAST_ALL_CHANNEL_ROLES)
+	):
 		return set(CHANNELS)
 
 	permitted = set()
@@ -118,9 +125,10 @@ def permitted_channels(user: str | None = None) -> set[str]:
 def has_permission(doc, ptype: str = "read", user: str | None = None, **kwargs) -> bool:
 	"""Evaluate P1 permission rules for Broadcast.
 
-	Read requires read-all role OR user holds the role of at least one channel row.
-	Create/write/delete/submit-like requires admin role OR role for EVERY channel row of doc
-	(a doc with no channel rows yet allows create for anyone with any channel role or admin).
+	Read requires read-all/all-channel role OR user holds the role of at least one channel row.
+	Create/write requires admin role, all-channel role (e.g. Campaign User), OR role for EVERY channel row of doc.
+	Delete requires admin role (BROADCAST_ADMIN_ROLES) OR channel Manager role for EVERY channel row of doc.
+	(a doc with no channel rows yet allows create/write for anyone with any channel role, all-channel role, or admin).
 	Guest never has permission.
 
 	Params:
@@ -148,19 +156,30 @@ def has_permission(doc, ptype: str = "read", user: str | None = None, **kwargs) 
 	if is_admin:
 		return True
 
-	is_read_all = any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
-	held_channels = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}
-
 	doc_channels = _get_doc_channels(doc)
 
+	if ptype == "delete":
+		# Delete strictly requires BROADCAST_ADMIN_ROLES or channel Manager role for every channel on doc.
+		# Campaign User and regular channel Users cannot delete.
+		held_manager_channels = {ch for ch, mgr in CHANNEL_MANAGER_ROLES.items() if mgr in user_roles}
+		if not doc_channels:
+			return bool(held_manager_channels)
+		return all(ch in held_manager_channels for ch in doc_channels)
+
+	is_read_all = any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
+	is_all_channel = any(r in user_roles for r in BROADCAST_ALL_CHANNEL_ROLES)
+	held_channels = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}
+	if is_all_channel:
+		held_channels = set(CHANNELS)
+
 	if ptype in ("read", "select"):
-		if is_read_all:
+		if is_read_all or is_all_channel:
 			return True
 		if not doc_channels:
 			return bool(held_channels)
 		return any(ch in held_channels for ch in doc_channels)
 
-	# create, write, delete, submit, cancel, etc.
+	# create, write, submit, cancel, etc.
 	# Admin already returned True above; non-admin with read-only roles (like Viewer) denied here
 	if not doc_channels:
 		# doc with no channel rows yet: allow create for anyone with any channel role or admin
@@ -172,8 +191,9 @@ def has_permission(doc, ptype: str = "read", user: str | None = None, **kwargs) 
 def recipient_has_permission(doc, ptype: str = "read", user: str | None = None, **kwargs) -> bool:
 	"""Evaluate permission rules for Broadcast Recipient filtered on channel column.
 
-	Read requires read-all role OR user holds the role of the recipient's channel.
-	Write/delete/create requires admin role OR user holds the role of the recipient's channel.
+	Read requires read-all/all-channel role OR user holds the role of the recipient's channel.
+	Write/create requires admin role, all-channel role, OR role of the recipient's channel.
+	Delete requires admin role OR channel Manager role of the recipient's channel.
 	Guest never has permission.
 
 	Params:
@@ -201,19 +221,28 @@ def recipient_has_permission(doc, ptype: str = "read", user: str | None = None, 
 	if is_admin:
 		return True
 
-	is_read_all = any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
-	held_channels = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}
-
 	channel = _get_recipient_channel(doc)
 
+	if ptype == "delete":
+		held_manager_channels = {ch for ch, mgr in CHANNEL_MANAGER_ROLES.items() if mgr in user_roles}
+		if not channel:
+			return bool(held_manager_channels)
+		return channel in held_manager_channels
+
+	is_read_all = any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
+	is_all_channel = any(r in user_roles for r in BROADCAST_ALL_CHANNEL_ROLES)
+	held_channels = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}
+	if is_all_channel:
+		held_channels = set(CHANNELS)
+
 	if ptype in ("read", "select"):
-		if is_read_all:
+		if is_read_all or is_all_channel:
 			return True
 		if not channel:
 			return bool(held_channels)
 		return channel in held_channels
 
-	# write, delete, create
+	# write, create
 	if not channel:
 		return bool(held_channels)
 	return channel in held_channels
@@ -222,7 +251,7 @@ def recipient_has_permission(doc, ptype: str = "read", user: str | None = None, 
 def broadcast_query_conditions(user: str | None = None) -> str:
 	"""Return permission_query_conditions SQL for Broadcast.
 
-	Returns empty string for read-all roles (or Administrator).
+	Returns empty string for read-all roles, all-channel roles, or Administrator.
 	Returns exists clause matching permitted channels for channel role holders.
 	Returns '1=0' for users with no channel role and Guest.
 
@@ -244,7 +273,11 @@ def broadcast_query_conditions(user: str | None = None) -> str:
 		return "1=0"
 
 	user_roles = set(frappe.get_roles(user))
-	if user == "Administrator" or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES):
+	if (
+		user == "Administrator"
+		or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
+		or any(r in user_roles for r in BROADCAST_ALL_CHANNEL_ROLES)
+	):
 		return ""
 
 	permitted = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}
@@ -258,7 +291,7 @@ def broadcast_query_conditions(user: str | None = None) -> str:
 def recipient_query_conditions(user: str | None = None) -> str:
 	"""Return permission_query_conditions SQL for Broadcast Recipient.
 
-	Returns empty string for read-all roles (or Administrator).
+	Returns empty string for read-all roles, all-channel roles, or Administrator.
 	Returns channel IN clause for permitted channels.
 	Returns '1=0' for users with no channel role and Guest.
 
@@ -280,7 +313,11 @@ def recipient_query_conditions(user: str | None = None) -> str:
 		return "1=0"
 
 	user_roles = set(frappe.get_roles(user))
-	if user == "Administrator" or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES):
+	if (
+		user == "Administrator"
+		or any(r in user_roles for r in BROADCAST_READ_ALL_ROLES)
+		or any(r in user_roles for r in BROADCAST_ALL_CHANNEL_ROLES)
+	):
 		return ""
 
 	permitted = {ch for ch, roles in CHANNEL_ROLES.items() if any(r in user_roles for r in roles)}

@@ -29,6 +29,7 @@ from msuite_campaigns.broadcast.constants import (
 	LEGACY_BROADCAST_DOCTYPES,
 	LEGACY_LIST_DOCTYPES,
 	MIGRATION_BATCH,
+	MIGRATION_VERIFY_CHUNK,
 	RECIPIENT_STATUSES,
 )
 from msuite_campaigns.broadcast.recipients import bulk_insert_recipients
@@ -958,10 +959,12 @@ def verify() -> dict:
 		old_count = len(old_names)
 		migrated_count = 0
 		if old_names:
-			migrated_count = frappe.db.count(
-				"Broadcast",
-				filters={"legacy_doctype": bc_dt, "legacy_name": ["in", old_names]},
-			)
+			for i in range(0, len(old_names), MIGRATION_VERIFY_CHUNK):
+				chunk = old_names[i : i + MIGRATION_VERIFY_CHUNK]
+				migrated_count += frappe.db.count(
+					"Broadcast",
+					filters={"legacy_doctype": bc_dt, "legacy_name": ["in", chunk]},
+				)
 		results[bc_dt] = {
 			"old_count": old_count,
 			"migrated_count": migrated_count,

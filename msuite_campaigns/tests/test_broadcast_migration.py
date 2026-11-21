@@ -578,3 +578,32 @@ class TestBroadcastMigration(IntegrationTestCase):
 			)
 			self.assertEqual(actual_st, expected_st)
 
+	def test_verify_chunks_in_clauses(self):
+		"""verify() chunks old_names list when querying migrated Broadcast records."""
+		count_calls = []
+		orig_count = frappe.db.count
+		orig_get_all = frappe.db.get_all
+
+		def tracking_count(doctype, filters=None, **kwargs):
+			if doctype == "Broadcast" and filters and "legacy_name" in filters:
+				legacy_names = filters["legacy_name"][1]
+				count_calls.append(len(legacy_names))
+			return orig_count(doctype, filters=filters, **kwargs)
+
+		fake_names = [f"FAKE-BC-{i}" for i in range(15)]
+
+		def mock_get_all(doctype, *args, **kwargs):
+			if doctype in migration.LEGACY_BROADCAST_DOCTYPES and kwargs.get("pluck") == "name":
+				return fake_names
+			return orig_get_all(doctype, *args, **kwargs)
+
+		with patch.object(migration, "MIGRATION_VERIFY_CHUNK", 5), \
+		     patch.object(frappe.db, "get_all", side_effect=mock_get_all), \
+		     patch.object(frappe.db, "count", side_effect=tracking_count):
+			res = migration.verify()
+			self.assertIn("Bulk WhatsApp Message", res)
+			# With 15 names and chunk size 5, should have 3 chunk calls per doctype (3 doctypes = 9 calls)
+			self.assertGreater(len(count_calls), 0)
+			for chunk_size in count_calls:
+				self.assertLessEqual(chunk_size, 5)
+

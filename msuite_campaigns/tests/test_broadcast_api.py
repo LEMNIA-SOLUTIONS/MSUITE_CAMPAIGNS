@@ -74,6 +74,7 @@ class TestBroadcastApi(IntegrationTestCase):
 		cls.user_email = _user(EMAIL_USER)
 		cls.user_viewer = _user(VIEWER)
 		cls.user_cm = _user(CAMPAIGN_MANAGER)
+		cls.user_cu = _user("Campaign User")
 		cls.user_none = _user(None)
 
 		# Ensure accounts and templates exist
@@ -486,22 +487,23 @@ class TestBroadcastApi(IntegrationTestCase):
 		self.assertLess(metrics_wa["total"], metrics_cm["total"])
 
 	def test_get_broadcast_with_metrics_mock(self):
-		"""get_broadcast returns full doc, channels, products, launch_error, and channel_metrics."""
+		"""get_broadcast returns full doc, channels, products, launch_error, and channel_metrics on channel row."""
 		b = self._create_broadcast(
 			"Full Broadcast Doc",
 			products=[{"item_code": "PROD-001"}],
 		)
 		frappe.set_user(self.user_cm)
 
-		# Mock broadcast.rollup if imported
-		mock_metrics = {"WhatsApp": {"sent": 10, "delivered": 9}}
-		with patch.dict("sys.modules", {"msuite_campaigns.broadcast.rollup": MagicMock(get_broadcast_channel_metrics=MagicMock(return_value=mock_metrics))}):
+		# Mock broadcast.rollup.channel_metrics
+		mock_metrics = {"channel": "WhatsApp", "metrics": {"sent": 10, "delivered": 9}}
+		with patch("msuite_campaigns.broadcast.rollup.channel_metrics", return_value=mock_metrics):
 			doc = broadcast_api.get_broadcast(b.name)
 			self.assertEqual(doc["name"], b.name)
 			self.assertIn("channels", doc)
 			self.assertIn("products", doc)
-			self.assertIn("channel_metrics", doc)
 			self.assertIn("launch_error", doc)
+			self.assertIn("channel_metrics", doc["channels"][0])
+			self.assertEqual(doc["channels"][0]["channel_metrics"], mock_metrics)
 
 	def test_save_broadcast_create_and_update(self):
 		"""save_broadcast creates Draft, updates Draft/Scheduled, and refuses update when In Progress."""
@@ -787,3 +789,240 @@ class TestBroadcastApi(IntegrationTestCase):
 			# 5. get_broadcast_recipients with unfiltered channel reads recipient_count from channel row
 			res_rec_channel = broadcast_api.get_broadcast_recipients(b.name, channel=CHANNEL_WHATSAPP)
 			self.assertEqual(res_rec_channel["total"], 5)
+
+	def test_campaign_user_full_access_except_delete(self):
+		"""Campaign User can list, get, save, launch mixed-channel broadcasts and read recipients, but NOT delete."""
+		frappe.set_user(self.user_cu)
+
+		# 1. Save mixed broadcast (WhatsApp + Email)
+		payload = {
+			"title": "CU Mixed Broadcast",
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+				{
+					"channel": "Email",
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+				},
+			],
+		}
+		res_save = broadcast_api.save_broadcast(json.dumps(payload))
+		self.assertIn("name", res_save)
+		b_name = res_save["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# 2. List broadcasts includes it
+		res_list = broadcast_api.list_broadcasts(search="CU Mixed")
+		self.assertIn(b_name, [r["name"] for r in res_list["rows"]])
+
+		# 3. Get broadcast returns both channels
+		doc = broadcast_api.get_broadcast(b_name)
+		self.assertEqual(len(doc["channels"]), 2)
+
+		# 4. Create a recipient and read recipients
+		self._create_recipient(b_name, "WhatsApp", "+1234567890")
+		rec_res = broadcast_api.get_broadcast_recipients(b_name)
+		self.assertEqual(rec_res["total"], 1)
+
+		# 5. Launch broadcast (mock hub.launch)
+		mock_hub = MagicMock()
+		mock_hub.launch.return_value = {"WhatsApp": "Queued", "Email": "Queued"}
+		with patch.dict("sys.modules", {"msuite_campaigns.broadcast.hub": mock_hub}):
+			launch_res = broadcast_api.launch_broadcast(b_name)
+			self.assertIn("WhatsApp", launch_res)
+
+		# 6. Delete broadcast is forbidden for Campaign User
+		del_res = broadcast_api.delete_broadcasts(json.dumps([b_name]))
+		self.assertNotIn(b_name, del_res.get("deleted", []))
+		failed_names = [item["name"] for item in del_res.get("failed", [])]
+		self.assertIn(b_name, failed_names)
+
+	def test_save_broadcast_mass_assignment_protection(self):
+		"""save_broadcast ignores forged status, counters, timestamps, and legacy fields on create and update."""
+		frappe.set_user(self.user_cm)
+
+		forged_payload = {
+			"title": "Forged Mass Assignment Blast",
+			"status": "Completed",
+			"total_recipients": 50000,
+			"launched_at": "2026-01-01 00:00:00",
+			"launch_error": "Fake error",
+			"legacy_doctype": "Bulk WhatsApp Message",
+			"legacy_name": "OLD-001",
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"status": "Completed",
+					"recipient_count": 50000,
+					"sent_count": 50000,
+					"delivered_count": 48000,
+					"read_count": 45000,
+					"failed_count": 2000,
+					"bounced_count": 100,
+					"opened_count": 200,
+					"clicked_count": 50,
+					"unsubscribed_count": 20,
+					"retry_count": 5,
+					"launch_error": "Fake channel error",
+					"estimated_credits": 100,
+					"actual_credits": 100,
+				}
+			],
+		}
+
+		res = broadcast_api.save_broadcast(json.dumps(forged_payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		b_doc = frappe.get_doc("Broadcast", b_name)
+		self.assertEqual(b_doc.status, STATUS_DRAFT)
+		self.assertEqual(b_doc.total_recipients, 0)
+		self.assertIsNone(b_doc.launched_at)
+		self.assertIsNone(b_doc.launch_error)
+		self.assertIsNone(b_doc.legacy_doctype)
+		self.assertIsNone(b_doc.legacy_name)
+
+		ch = b_doc.channels[0]
+		self.assertEqual(ch.status, STATUS_DRAFT)
+		self.assertEqual(ch.recipient_count, 0)
+		self.assertEqual(ch.sent_count, 0)
+		self.assertEqual(ch.delivered_count, 0)
+		self.assertEqual(ch.read_count, 0)
+		self.assertEqual(ch.failed_count, 0)
+		self.assertEqual(ch.bounced_count, 0)
+		self.assertEqual(ch.opened_count, 0)
+		self.assertEqual(ch.clicked_count, 0)
+		self.assertEqual(ch.unsubscribed_count, 0)
+		self.assertEqual(ch.retry_count, 0)
+		self.assertIsNone(ch.launch_error)
+		self.assertEqual(ch.estimated_credits, 0)
+		self.assertEqual(ch.actual_credits, 0)
+
+		# Test update cannot forge counters or status either
+		update_payload = {
+			"title": "Updated Title Only",
+			"status": "Completed",
+			"total_recipients": 99999,
+			"channels": [
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"status": "Completed",
+					"recipient_count": 99999,
+					"sent_count": 99999,
+				}
+			],
+		}
+		broadcast_api.save_broadcast(json.dumps(update_payload), name=b_name)
+		b_doc.reload()
+		self.assertEqual(b_doc.title, "Updated Title Only")
+		self.assertEqual(b_doc.status, STATUS_DRAFT)
+		self.assertEqual(b_doc.total_recipients, 0)
+		self.assertEqual(b_doc.channels[0].status, STATUS_DRAFT)
+		self.assertEqual(b_doc.channels[0].recipient_count, 0)
+		self.assertEqual(b_doc.channels[0].sent_count, 0)
+
+	def test_get_broadcast_channel_metrics_isolation(self):
+		"""get_broadcast attaches rollup metrics to permitted channel rows only, with no root metrics."""
+		b = self._create_broadcast(
+			"Two Channel Metrics Test",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"status": "Draft",
+				},
+				{
+					"channel": "Email",
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"status": "Draft",
+				},
+			],
+		)
+
+		def mock_channel_metrics(broadcast, channel, *args, **kwargs):
+			if channel == "WhatsApp":
+				return {"channel": "WhatsApp", "metrics": {"sent": 10, "delivered": 9}}
+			elif channel == "Email":
+				return {"channel": "Email", "metrics": {"sent": 25, "delivered": 24}}
+			return {}
+
+		with patch("msuite_campaigns.broadcast.rollup.channel_metrics", side_effect=mock_channel_metrics):
+			# 1. WhatsApp-only user sees only WhatsApp metrics, Email metrics not exposed
+			frappe.set_user(self.user_wa)
+			doc_wa = broadcast_api.get_broadcast(b.name)
+			self.assertEqual(len(doc_wa["channels"]), 1)
+			self.assertEqual(doc_wa["channels"][0]["channel"], "WhatsApp")
+			self.assertEqual(doc_wa["channels"][0]["channel_metrics"]["metrics"]["sent"], 10)
+			self.assertNotIn("channel_metrics", doc_wa)
+
+			# 2. Campaign Manager sees both channels with respective metrics
+			frappe.set_user(self.user_cm)
+			doc_cm = broadcast_api.get_broadcast(b.name)
+			self.assertEqual(len(doc_cm["channels"]), 2)
+			wa_ch = next(c for c in doc_cm["channels"] if c["channel"] == "WhatsApp")
+			em_ch = next(c for c in doc_cm["channels"] if c["channel"] == "Email")
+			self.assertEqual(wa_ch["channel_metrics"]["metrics"]["sent"], 10)
+			self.assertEqual(em_ch["channel_metrics"]["metrics"]["sent"], 25)
+			self.assertNotIn("channel_metrics", doc_cm)
+
+	def test_clone_broadcast_requires_all_channels(self):
+		"""clone_broadcast requires create permission on all source channels; partial-role user gets PermissionError."""
+		b = self._create_broadcast(
+			"Two Channel Clone Test",
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"status": "Draft",
+				},
+				{
+					"channel": "Email",
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"status": "Draft",
+				},
+			],
+		)
+
+		# WhatsApp User has permission on WhatsApp, but NOT Email
+		frappe.set_user(self.user_wa)
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			broadcast_api.clone_broadcast(b.name)
+		self.assertIn("channel", str(ctx.exception).lower())
+
+		# Campaign Manager has all channels: succeeds
+		frappe.set_user(self.user_cm)
+		cloned = broadcast_api.clone_broadcast(b.name)
+		self.cleanup_broadcasts.append(cloned["name"])
+		self.assertEqual(cloned["title"], f"{b.title} (copy)")
+		self.assertEqual(len(cloned["channels"]), 2)
+
+	def test_channel_user_cannot_delete_manager_can(self):
+		"""Channel User cannot delete broadcasts; only Channel Manager (or admin) can."""
+		b = self._create_broadcast("Delete Role Test", status="Draft")
+
+		# WhatsApp User cannot delete
+		frappe.set_user(self.user_wa)
+		res_user = broadcast_api.delete_broadcasts(json.dumps([b.name]))
+		self.assertNotIn(b.name, res_user.get("deleted", []))
+		failed_map = {item["name"]: item["reason"] for item in res_user.get("failed", [])}
+		self.assertIn(b.name, failed_map)
+		self.assertIn("permission", failed_map[b.name].lower())
+
+		# WhatsApp Manager CAN delete
+		frappe.set_user(self.user_wa_manager)
+		res_mgr = broadcast_api.delete_broadcasts(json.dumps([b.name]))
+		self.assertIn(b.name, res_mgr.get("deleted", []))

@@ -100,7 +100,19 @@ class TestBroadcastPermissions(IntegrationTestCase):
 			"MSuite Viewer": "Rr",
 		}
 		self.assertEqual(MATRIX["Broadcast"], expected_broadcast)
-		self.assertEqual(MATRIX["Broadcast Recipient"], expected_broadcast)
+
+		expected_broadcast_recipient = {
+			"Campaign Manager": "RrEPM",
+			"Campaign User": "RrEPM",
+			"WhatsApp Manager": "RrEPM",
+			"WhatsApp User": "RrEPM",
+			"Email Manager": "RrEPM",
+			"Email User": "RrEPM",
+			"SMS Manager": "RrEPM",
+			"SMS User": "RrEPM",
+			"MSuite Viewer": "Rr",
+		}
+		self.assertEqual(MATRIX["Broadcast Recipient"], expected_broadcast_recipient)
 
 	def test_permitted_channels_per_role(self):
 		"""Validate permitted_channels for each role type.
@@ -140,12 +152,15 @@ class TestBroadcastPermissions(IntegrationTestCase):
 		with patch("frappe.get_roles", return_value=["System Manager"]):
 			self.assertEqual(permitted_channels("sm@example.com"), {"WhatsApp", "Email", "SMS"})
 
+		with patch("frappe.get_roles", return_value=["Campaign User"]):
+			self.assertEqual(permitted_channels("cu@example.com"), {"WhatsApp", "Email", "SMS"})
+
 		self.assertEqual(permitted_channels("Administrator"), {"WhatsApp", "Email", "SMS"})
 
 	def test_role_x_channel_matrix(self):
 		"""Validate permission checks across role x channel matrix for CRUD operations.
 
-		Roles: WhatsApp User, Email User, SMS User, MSuite Viewer, Campaign Manager, Guest.
+		Roles: WhatsApp User/Manager, Email User/Manager, SMS User/Manager, MSuite Viewer, Campaign Manager/User, Guest.
 		Actions: create, read, write, delete.
 
 		Params: None.
@@ -156,10 +171,14 @@ class TestBroadcastPermissions(IntegrationTestCase):
 		channels = ["WhatsApp", "Email", "SMS"]
 		role_users = {
 			"WhatsApp User": ["WhatsApp User"],
+			"WhatsApp Manager": ["WhatsApp Manager"],
 			"Email User": ["Email User"],
+			"Email Manager": ["Email Manager"],
 			"SMS User": ["SMS User"],
+			"SMS Manager": ["SMS Manager"],
 			"MSuite Viewer": ["MSuite Viewer"],
 			"Campaign Manager": ["Campaign Manager"],
+			"Campaign User": ["Campaign User"],
 			"Guest": ["Guest"],
 		}
 
@@ -188,17 +207,25 @@ class TestBroadcastPermissions(IntegrationTestCase):
 						self.assertTrue(can_write)
 						self.assertTrue(can_create)
 						self.assertTrue(can_delete)
+					elif role_name == "Campaign User":
+						self.assertTrue(can_read)
+						self.assertTrue(can_write)
+						self.assertTrue(can_create)
+						self.assertFalse(can_delete)
 					elif role_name == "MSuite Viewer":
 						self.assertTrue(can_read)
 						self.assertFalse(can_write)
 						self.assertFalse(can_create)
 						self.assertFalse(can_delete)
 					elif role_name.startswith(ch):
-						# Matching channel user
+						# Matching channel
 						self.assertTrue(can_read, f"{role_name} should read {ch}")
 						self.assertTrue(can_write, f"{role_name} should write {ch}")
 						self.assertTrue(can_create, f"{role_name} should create {ch}")
-						self.assertTrue(can_delete, f"{role_name} should delete {ch}")
+						if role_name.endswith("Manager"):
+							self.assertTrue(can_delete, f"{role_name} should delete {ch}")
+						else:
+							self.assertFalse(can_delete, f"{role_name} should not delete {ch}")
 					else:
 						# Non-matching channel user
 						self.assertFalse(can_read, f"{role_name} should not read {ch}")
@@ -209,8 +236,8 @@ class TestBroadcastPermissions(IntegrationTestCase):
 	def test_mixed_channel_broadcast_partial_roles_p1(self):
 		"""Validate P1 mixed-channel broadcast: read allowed with partial role, write denied.
 
-		A Broadcast spanning WhatsApp and Email requires BOTH channel roles to write/delete/create,
-		but only AT LEAST ONE role to read.
+		A Broadcast spanning WhatsApp and Email requires BOTH channel roles to write/create,
+		BOTH channel Manager roles to delete, but only AT LEAST ONE role to read.
 
 		Params: None.
 		Returns: None.
@@ -248,19 +275,36 @@ class TestBroadcastPermissions(IntegrationTestCase):
 			self.assertFalse(has_permission(doc, ptype="read", user=user))
 			self.assertFalse(has_permission(doc, ptype="write", user=user))
 
-		# User with BOTH WhatsApp User and Email User: can read AND write
+		# User with BOTH WhatsApp User and Email User: can read AND write, but NOT delete
 		with patch("frappe.get_roles", return_value=["WhatsApp User", "Email User"]):
-			user = "both@example.com"
+			user = "both_users@example.com"
+			self.assertTrue(has_permission(doc, ptype="read", user=user))
+			self.assertTrue(has_permission(doc, ptype="write", user=user))
+			self.assertFalse(has_permission(doc, ptype="delete", user=user))
+			self.assertTrue(has_permission(doc, ptype="create", user=user))
+
+		# User with BOTH WhatsApp Manager and Email Manager: can delete too
+		with patch("frappe.get_roles", return_value=["WhatsApp Manager", "Email Manager"]):
+			user = "both_managers@example.com"
 			self.assertTrue(has_permission(doc, ptype="read", user=user))
 			self.assertTrue(has_permission(doc, ptype="write", user=user))
 			self.assertTrue(has_permission(doc, ptype="delete", user=user))
 			self.assertTrue(has_permission(doc, ptype="create", user=user))
 
-		# Campaign Manager: admin can read and write
+		# Campaign Manager: admin can read, write, delete
 		with patch("frappe.get_roles", return_value=["Campaign Manager"]):
 			user = "cm@example.com"
 			self.assertTrue(has_permission(doc, ptype="read", user=user))
 			self.assertTrue(has_permission(doc, ptype="write", user=user))
+			self.assertTrue(has_permission(doc, ptype="delete", user=user))
+
+		# Campaign User: can read, write, create, but NOT delete
+		with patch("frappe.get_roles", return_value=["Campaign User"]):
+			user = "cu@example.com"
+			self.assertTrue(has_permission(doc, ptype="read", user=user))
+			self.assertTrue(has_permission(doc, ptype="write", user=user))
+			self.assertTrue(has_permission(doc, ptype="create", user=user))
+			self.assertFalse(has_permission(doc, ptype="delete", user=user))
 
 		# MSuite Viewer: can read, cannot write
 		with patch("frappe.get_roles", return_value=["MSuite Viewer"]):
@@ -406,3 +450,31 @@ class TestBroadcastPermissions(IntegrationTestCase):
 			self.assertIsInstance(result, list)
 		finally:
 			frappe.set_user(orig_user)
+
+	def test_campaign_user_lockout_regression(self):
+		"""Campaign User holds ALL channels for read/write/create, but NEVER delete."""
+		doc = frappe._dict({
+			"doctype": "Broadcast",
+			"name": "test-bc-cu-mixed",
+			"channels": [
+				frappe._dict({"channel": "WhatsApp"}),
+				frappe._dict({"channel": "Email"}),
+			],
+		})
+		rec_doc = frappe._dict({
+			"doctype": "Broadcast Recipient",
+			"name": "test-rec-cu",
+			"channel": "WhatsApp",
+		})
+
+		with patch("frappe.get_roles", return_value=["Campaign User"]):
+			user = "cu@example.com"
+			self.assertEqual(permitted_channels(user), {"WhatsApp", "Email", "SMS"})
+			self.assertEqual(broadcast_query_conditions(user), "")
+			self.assertEqual(recipient_query_conditions(user), "")
+			self.assertTrue(has_permission(doc, ptype="read", user=user))
+			self.assertTrue(has_permission(doc, ptype="write", user=user))
+			self.assertTrue(has_permission(doc, ptype="create", user=user))
+			self.assertFalse(has_permission(doc, ptype="delete", user=user))
+			self.assertTrue(recipient_has_permission(rec_doc, ptype="read", user=user))
+			self.assertFalse(recipient_has_permission(rec_doc, ptype="delete", user=user))

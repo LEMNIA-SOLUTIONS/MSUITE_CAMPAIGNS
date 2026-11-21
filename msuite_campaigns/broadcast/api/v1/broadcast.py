@@ -34,6 +34,8 @@ from msuite_campaigns.broadcast.constants import (
 	STATUS_PAUSED,
 	STATUS_QUEUED,
 	STATUS_SCHEDULED,
+	WRITABLE_BROADCAST_FIELDS,
+	WRITABLE_CHANNEL_FIELDS,
 )
 from msuite_campaigns.broadcast.permissions import permitted_channels
 
@@ -344,21 +346,50 @@ def get_broadcast(name: str) -> dict:
 	if CHANNEL_WHATSAPP not in user_channels:
 		doc_dict["products"] = []
 
-	channel_metrics: dict[str, Any] = {}
-	try:
-		from msuite_campaigns.broadcast import rollup  # noqa: F401
-		if hasattr(rollup, "get_broadcast_channel_metrics"):
-			channel_metrics = rollup.get_broadcast_channel_metrics(name)
-		elif hasattr(rollup, "get_channel_metrics"):
-			channel_metrics = rollup.get_channel_metrics(name)
-	except Exception:
-		channel_metrics = {}
-
-	doc_dict["channel_metrics"] = channel_metrics
-	for ch in doc_dict["channels"]:
-		ch["channel_metrics"] = channel_metrics.get(ch.get("channel"), {})
+	for ch in doc_dict.get("channels", []):
+		ch_name = ch.get("channel")
+		try:
+			from msuite_campaigns.broadcast import rollup
+			ch["channel_metrics"] = rollup.channel_metrics(doc, ch_name)
+		except Exception:
+			ch["channel_metrics"] = {}
 
 	return doc_dict
+
+
+def _sanitize_channel_row(ch: dict) -> dict:
+	"""Sanitize child channel dict by enforcing writable field whitelist and zeroing counters.
+
+	Params:
+		ch: Dictionary of channel fields.
+
+	Returns:
+		dict: Sanitized channel row dictionary.
+
+	Exceptions:
+		None.
+
+	Side effects:
+		None.
+	"""
+	row = {k: ch[k] for k in WRITABLE_CHANNEL_FIELDS if k in ch}
+	if row.get("channel") != CHANNEL_WHATSAPP:
+		row["variable_type"] = ""
+	row["status"] = STATUS_DRAFT
+	row["recipient_count"] = 0
+	row["sent_count"] = 0
+	row["delivered_count"] = 0
+	row["read_count"] = 0
+	row["failed_count"] = 0
+	row["bounced_count"] = 0
+	row["opened_count"] = 0
+	row["clicked_count"] = 0
+	row["unsubscribed_count"] = 0
+	row["retry_count"] = 0
+	row["estimated_credits"] = 0
+	row["actual_credits"] = 0
+	row["launch_error"] = None
+	return row
 
 
 @frappe.whitelist()
@@ -403,30 +434,52 @@ def save_broadcast(
 				frappe.ValidationError,
 			)
 
-		for field in ("title", "description", "campaign", "recipient_source", "recipient_list", "scheduled_time"):
+		for field in WRITABLE_BROADCAST_FIELDS:
 			if field in data:
 				b_doc.set(field, data[field])
 
 		if "channels" in data:
 			b_doc.set("channels", [])
 			for ch in data["channels"]:
-				if ch.get("channel") != CHANNEL_WHATSAPP:
-					ch.setdefault("variable_type", "")
-				b_doc.append("channels", ch)
+				if isinstance(ch, dict):
+					b_doc.append("channels", _sanitize_channel_row(ch))
 
 		if "products" in data:
 			b_doc.set("products", [])
 			for prod in data["products"]:
-				b_doc.append("products", prod)
+				item_code = prod.get("item_code") if isinstance(prod, dict) else prod
+				b_doc.append("products", {"item_code": item_code})
 
 		frappe.has_permission("Broadcast", "write", doc=b_doc, throw=True)
 		b_doc.save()
 	else:
 		b_doc = frappe.new_doc("Broadcast")
-		b_doc.update(data)
-		for ch in b_doc.channels:
-			if ch.channel != CHANNEL_WHATSAPP:
-				ch.variable_type = ""
+		b_doc.status = STATUS_DRAFT
+		b_doc.total_recipients = 0
+		b_doc.recipient_count = 0
+		b_doc.sent_count = 0
+		b_doc.delivered_count = 0
+		b_doc.read_count = 0
+		b_doc.failed_count = 0
+		b_doc.launched_at = None
+		b_doc.launch_error = None
+		b_doc.legacy_doctype = None
+		b_doc.legacy_name = None
+
+		for field in WRITABLE_BROADCAST_FIELDS:
+			if field in data:
+				b_doc.set(field, data[field])
+
+		b_doc.set("channels", [])
+		for ch in data.get("channels", []):
+			if isinstance(ch, dict):
+				b_doc.append("channels", _sanitize_channel_row(ch))
+
+		b_doc.set("products", [])
+		for prod in data.get("products", []):
+			item_code = prod.get("item_code") if isinstance(prod, dict) else prod
+			b_doc.append("products", {"item_code": item_code})
+
 		frappe.has_permission("Broadcast", "create", doc=b_doc, throw=True)
 		b_doc.insert()
 
@@ -859,9 +912,13 @@ def clone_broadcast(name: str) -> dict:
 		Inserts a new Broadcast document in the database.
 	"""
 	frappe.has_permission("Broadcast", "read", doc=name, throw=True)
-	frappe.has_permission("Broadcast", "create", throw=True)
-
 	doc = frappe.get_doc("Broadcast", name)
+
+	if not frappe.has_permission("Broadcast", "create", doc=doc):
+		frappe.throw(
+			_("Cloning requires access to every channel on the broadcast."),
+			frappe.PermissionError,
+		)
 
 	new_doc = frappe.new_doc("Broadcast")
 	new_doc.title = f"{doc.title} (copy)"

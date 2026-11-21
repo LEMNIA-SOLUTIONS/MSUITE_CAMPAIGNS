@@ -74,9 +74,17 @@ CHANNEL_ROLES: dict[str, tuple[str, ...]] = {
 	"SMS": ("SMS Manager", "SMS User"),
 }
 
+CHANNEL_MANAGER_ROLES: dict[str, str] = {
+	"WhatsApp": "WhatsApp Manager",
+	"Email": "Email Manager",
+	"SMS": "SMS Manager",
+}
+
 BROADCAST_ADMIN_ROLES: tuple[str, ...] = ("System Manager", "MSuite Admin", "Campaign Manager")
 
 BROADCAST_READ_ALL_ROLES: tuple[str, ...] = BROADCAST_ADMIN_ROLES + ("MSuite Viewer",)
+
+BROADCAST_ALL_CHANNEL_ROLES: tuple[str, ...] = ("Campaign User",)
 
 SEND_CHUNK_SIZE: int = 500
 SEND_QUEUE: str = "long"
@@ -100,8 +108,48 @@ STATUS_CANCELLED: str = "Cancelled"
 
 # Task 14: Data migration constants
 MIGRATION_BATCH: int = 200
+MIGRATION_VERIFY_CHUNK: int = 1000
 LEGACY_LIST_DOCTYPES: tuple[str, ...] = ("Audience", "WhatsApp Recipient List", "Email Recipient List")
 LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = ("Bulk WhatsApp Message", "Bulk Email Message", "Bulk SMS Message")
+
+# Whitelists for save_broadcast to prevent mass-assignment vulnerabilities
+WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
+	"title",
+	"description",
+	"campaign",
+	"recipient_source",
+	"recipient_list",
+	"scheduled_time",
+)
+
+WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
+	"channel",
+	"delivery_engine",
+	"use_batched_enqueue",
+	"template_variables",
+	"whatsapp_account",
+	"whatsapp_template",
+	"variable_type",
+	"from_number",
+	"attach",
+	"is_mpm",
+	"mpm_header",
+	"thumbnail_product_retailer_id",
+	"is_carousel_template",
+	"carousel_catalog",
+	"offer_expires_at",
+	"coupon_code",
+	"tap_target_url",
+	"tap_target_title",
+	"is_lead_automation_broadcast",
+	"lead_automation_rule",
+	"email_account",
+	"email_template",
+	"subject_override",
+	"from_name",
+	"sms_account",
+	"sms_template",
+)
 
 
 
