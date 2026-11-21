@@ -25,6 +25,7 @@ from msuite_campaigns.broadcast.constants import (
 	CHANNEL_EMAIL,
 	CHANNEL_SMS,
 	CHANNEL_WHATSAPP,
+	CHANNELS,
 	STATUS_CANCELLED,
 	STATUS_COMPLETED,
 	STATUS_DRAFT,
@@ -967,3 +968,71 @@ def clone_broadcast(name: str) -> dict:
 
 	new_doc.insert()
 	return new_doc.as_dict()
+
+
+@frappe.whitelist()
+def preview_broadcast(payload: str = "") -> dict:
+	"""Compute reachable vs dropped counts per channel for a candidate broadcast.
+
+	Enforces read permission on Broadcast, parses JSON payload with recipient source,
+	target recipient list or individual rows, and requested channels. Validates channels
+	against supported channel identifiers. Delegates directly to broadcast.hub.preview.
+
+	Params:
+		payload: JSON string or dict containing:
+			- recipient_source: 'Recipient List' or 'Individual'
+			- recipient_list: Name of Recipient List document (when recipient_source is 'Recipient List')
+			- channels: List of channel names ('WhatsApp', 'Email', 'SMS')
+			- individual_rows: Optional list of dicts with 'address' and optional 'recipient_name'
+
+	Returns:
+		dict: {
+			"channels": {<channel>: {"reachable": int, "dropped": int, "reasons": dict}},
+			"total": int
+		}
+
+	Exceptions:
+		frappe.PermissionError: If current user lacks read permission on Broadcast.
+		frappe.ValidationError: If payload JSON is invalid, channels is invalid, or channel not supported.
+		frappe.DoesNotExistError: If target Recipient List does not exist.
+
+	Side effects:
+		None (preview executes read-only operations without writing to the database).
+	"""
+	# perm: enforce read permission on Broadcast matching list_broadcasts
+	frappe.has_permission("Broadcast", "read", throw=True)
+
+	if isinstance(payload, str):
+		try:
+			data = json.loads(payload or "{}")
+		except (json.JSONDecodeError, TypeError):
+			frappe.throw(_("Invalid payload — expected JSON."), frappe.ValidationError)
+	elif isinstance(payload, dict):
+		data = payload
+	else:
+		frappe.throw(_("Invalid payload — expected JSON."), frappe.ValidationError)
+
+	if not isinstance(data, dict):
+		frappe.throw(_("Invalid payload — expected JSON object."), frappe.ValidationError)
+
+	channels = data.get("channels") or []
+	if not isinstance(channels, list):
+		frappe.throw(_("channels must be a list."), frappe.ValidationError)
+
+	for ch in channels:
+		if ch not in CHANNELS:
+			frappe.throw(
+				_("Invalid channel: {0}. Must be one of {1}.").format(ch, ", ".join(CHANNELS)),
+				frappe.ValidationError,
+			)
+
+	recipient_source = data.get("recipient_source", "Recipient List")
+	if recipient_source == "Recipient List":
+		rec_list = data.get("recipient_list")
+		if not rec_list or not frappe.db.exists("Recipient List", rec_list):
+			frappe.throw(_("Recipient List {0} not found.").format(rec_list), frappe.DoesNotExistError)
+
+	from msuite_campaigns.broadcast import hub
+
+	return hub.preview(data)
+
