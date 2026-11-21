@@ -1036,3 +1036,117 @@ def preview_broadcast(payload: str = "") -> dict:
 
 	return hub.preview(data)
 
+
+AI_CALL_CONFIG_WHITELIST: tuple[str, ...] = (
+	"assistant",
+	"phone_number",
+	"end_date",
+	"calling_start_time",
+	"calling_end_time",
+	"timezone",
+	"max_calls_per_hour",
+	"retry_count",
+	"instructions",
+)
+
+
+@frappe.whitelist()
+def launch_ai_call_broadcast(payload: str = "") -> dict:
+	"""Launch an AI calling broadcast for a recipient list via registered campaign adapter.
+
+	Validates write permission on Broadcast, parses payload, resolves the target
+	Recipient List, extracts reachable phone contacts, and routes to the registered
+	'ai_call' channel adapter to build and start the broadcast.
+
+	Params:
+		payload: JSON string or dict containing:
+			- recipient_list (str, required): Name of target Recipient List document.
+			- campaign (str, optional): Linked Marketing Campaign identifier.
+			- config (dict, required): Configuration mapping with whitelisted keys:
+				assistant, phone_number, end_date, calling_start_time, calling_end_time,
+				timezone, max_calls_per_hour, retry_count, instructions.
+			- scheduled_time (str, optional): Target start timestamp or date.
+
+	Returns:
+		dict: {"name": str} with the identifier of the created AI Calling Broadcast.
+
+	Exceptions:
+		frappe.PermissionError: If current user lacks write permission on Broadcast.
+		frappe.ValidationError: If payload JSON is invalid, adapter is not registered,
+			or no reachable phone contacts exist in the recipient list.
+		frappe.DoesNotExistError: If target Recipient List does not exist.
+
+	Side effects:
+		Creates and starts an AI Calling Broadcast document via the channel adapter.
+	"""
+	# perm: enforce write permission on Broadcast
+	frappe.has_permission("Broadcast", "write", throw=True)
+
+	if isinstance(payload, str):
+		try:
+			data = json.loads(payload or "{}")
+		except (json.JSONDecodeError, TypeError):
+			frappe.throw(_("Invalid payload — expected JSON."), frappe.ValidationError)
+	elif isinstance(payload, dict):
+		data = payload
+	else:
+		frappe.throw(_("Invalid payload — expected JSON."), frappe.ValidationError)
+
+	if not isinstance(data, dict):
+		frappe.throw(_("Invalid payload — expected JSON object."), frappe.ValidationError)
+
+	rec_list_name = data.get("recipient_list")
+	if not rec_list_name or not frappe.db.exists("Recipient List", rec_list_name):
+		frappe.throw(
+			_("Recipient List {0} not found.").format(rec_list_name),
+			frappe.DoesNotExistError,
+		)
+
+	from msuite_campaigns.campaign.services import relationships
+
+	adapters = relationships.get_adapters()
+	adapter = adapters.get("ai_call")
+	if not adapter or not adapter.get("build") or not adapter.get("launch"):
+		frappe.throw(
+			_("AI Calling is not installed or enabled on this site."),
+			frappe.ValidationError,
+		)
+
+	rec_list = frappe.get_doc("Recipient List", rec_list_name)
+	phone_contacts = rec_list.contacts_for("SMS")
+	members = [
+		{"phone_e164": c["phone_e164"], "full_name": c.get("full_name")}
+		for c in phone_contacts
+		if c.get("phone_e164")
+	]
+	if not members:
+		frappe.throw(
+			_("No reachable phone contacts found in Recipient List {0}.").format(rec_list_name),
+			frappe.ValidationError,
+		)
+
+	raw_config = data.get("config") or {}
+	if not isinstance(raw_config, dict):
+		raw_config = {}
+
+	clean_config = {k: raw_config[k] for k in AI_CALL_CONFIG_WHITELIST if k in raw_config}
+
+	scheduled_time = data.get("scheduled_time")
+	if scheduled_time:
+		try:
+			clean_config["start_date"] = str(getdate(scheduled_time))
+		except Exception:
+			clean_config["start_date"] = str(scheduled_time)
+
+	campaign = data.get("campaign") or None
+
+	build_res = adapter["build"](campaign, rec_list, members, clean_config)
+	broadcast_name = build_res.get("name") if isinstance(build_res, dict) else str(build_res)
+	if not broadcast_name:
+		frappe.throw(_("Failed to build AI calling broadcast."), frappe.ValidationError)
+
+	adapter["launch"](broadcast_name, clean_config)
+
+	return {"name": broadcast_name}
+
+
