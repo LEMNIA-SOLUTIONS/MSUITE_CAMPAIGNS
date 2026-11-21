@@ -63,6 +63,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.cleanup_campaigns: list[str] = []
 		self.cleanup_broadcasts: list[str] = []
 		self.cleanup_blasts: list[str] = []
+		self.cleanup_email_blasts: list[str] = []
 		self.cleanup_events: list[str] = []
 
 	def tearDown(self):
@@ -74,6 +75,9 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		for name in self.cleanup_blasts:
 			if frappe.db.exists("Bulk WhatsApp Message", name):
 				frappe.delete_doc("Bulk WhatsApp Message", name, force=True, ignore_permissions=True)
+		for name in self.cleanup_email_blasts:
+			if frappe.db.exists("Bulk Email Message", name):
+				frappe.delete_doc("Bulk Email Message", name, force=True, ignore_permissions=True)
 		for name in self.cleanup_campaigns:
 			if frappe.db.exists("Marketing Campaign", name):
 				frappe.delete_doc("Marketing Campaign", name, force=True, ignore_permissions=True)
@@ -157,6 +161,22 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		doc.flags.ignore_validate = True
 		doc.insert(ignore_permissions=True, ignore_links=True, ignore_mandatory=True)
 		self.cleanup_blasts.append(doc.name)
+		return doc
+
+	def _make_bulk_email(self, campaign: str = "", title: str = "Test Old Email Blast") -> "Document":
+		"""Create a legacy Bulk Email Message."""
+		doc = frappe.get_doc(
+			{
+				"doctype": "Bulk Email Message",
+				"title": title,
+				"campaign": campaign,
+				"status": "Draft",
+				"recipient_type": "Individual",
+			}
+		)
+		doc.flags.ignore_validate = True
+		doc.insert(ignore_permissions=True, ignore_links=True, ignore_mandatory=True)
+		self.cleanup_email_blasts.append(doc.name)
 		return doc
 
 	def test_counts_include_both_kinds(self):
@@ -851,3 +871,68 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertEqual(metrics["WhatsApp"]["metrics"]["audience"], 120)
 		self.assertEqual(metrics["WhatsApp"]["metrics"]["sent"], 120)
 		self.assertEqual(metrics["WhatsApp"]["blasts"], 12)
+
+	def test_duplicate_campaign_preserves_migrated_email_and_sms_broadcasts(self):
+		"""F7 / NEW-I-01: duplicate_campaign skips only migrated WhatsApp broadcasts whose legacy blast is duplicated.
+
+		Migrated Email and SMS broadcasts (and new broadcasts) must be preserved in the cloned campaign.
+		"""
+		campaign = self._make_campaign("Duplicate Migrated Campaign")
+
+		# (a) An old Bulk WhatsApp Message and its migrated Broadcast
+		legacy_wa = self._make_bulk_whatsapp(campaign.name, "Legacy WA Blast")
+		migrated_wa_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated WA Broadcast",
+			legacy_doctype="Bulk WhatsApp Message",
+			legacy_name=legacy_wa.name,
+			channels=[{"channel": "WhatsApp"}],
+		)
+
+		# (b) A migrated Email Broadcast (legacy_doctype Bulk Email Message, legacy doc still present)
+		legacy_email = self._make_bulk_email(campaign=campaign.name, title="Legacy Email Blast")
+		migrated_email_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated Email Broadcast",
+			legacy_doctype="Bulk Email Message",
+			legacy_name=legacy_email.name,
+			channels=[{"channel": "Email"}],
+		)
+
+		# (c) A genuinely new SMS Broadcast
+		new_sms_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="New SMS Broadcast",
+			channels=[{"channel": "SMS"}],
+		)
+
+		res = duplicate_campaign(campaign.name, duplicate_children=1)
+		new_campaign_name = res["name"]
+		self.cleanup_campaigns.append(new_campaign_name)
+
+		# Under new_campaign:
+		# 1. Bulk WhatsApp Message was duplicated (from legacy_wa)
+		cloned_wa_blasts = frappe.get_all(
+			"Bulk WhatsApp Message",
+			filters={"campaign": new_campaign_name},
+			pluck="name",
+		)
+		self.assertEqual(len(cloned_wa_blasts), 1)
+		self.cleanup_blasts.extend(cloned_wa_blasts)
+
+		# 2. Cloned broadcasts must contain the Email copy and the SMS copy,
+		# and NOT a second WhatsApp Broadcast for (a)
+		cloned_bcs = frappe.get_all(
+			"Broadcast",
+			filters={"campaign": new_campaign_name},
+			fields=["name", "title"],
+		)
+		for b in cloned_bcs:
+			self.cleanup_broadcasts.append(b["name"])
+
+		cloned_titles = [b["title"] for b in cloned_bcs]
+		self.assertNotIn("Migrated WA Broadcast", cloned_titles)
+		self.assertIn("Migrated Email Broadcast", cloned_titles)
+		self.assertIn("New SMS Broadcast", cloned_titles)
+		self.assertEqual(len(cloned_bcs), 2)
+

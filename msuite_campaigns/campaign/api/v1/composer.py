@@ -608,7 +608,24 @@ def _serialize(doc) -> dict:
 @frappe.whitelist()
 def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 	"""Duplicate a Marketing Campaign.
-	If duplicate_children is 1, also duplicates associated child campaigns (Social & Ads & WhatsApp blasts).
+
+	If duplicate_children is 1, also duplicates associated child campaigns (Social,
+	Ads, WhatsApp blasts, and Broadcasts). Migrated WhatsApp broadcasts whose legacy
+	blasts are duplicated in the same call are skipped to prevent duplicate blasts.
+
+	Args:
+		name: The name of the Marketing Campaign to duplicate.
+		duplicate_children: If 1, duplicate child campaigns and blasts; if 0, duplicate only the campaign document.
+
+	Returns:
+		dict: Serialized dictionary of the newly created Marketing Campaign.
+
+	Raises:
+		frappe.PermissionError: If the user lacks read permission on the campaign or create permission on Marketing Campaign.
+
+	Side effects:
+		Inserts cloned Marketing Campaign and child documents into the database,
+		commits the database transaction (frappe.db.commit).
 	"""
 	if not frappe.has_permission("Marketing Campaign", "read", doc=name):
 		frappe.throw(_("You do not have permission to duplicate this campaign."), frappe.PermissionError)
@@ -725,15 +742,15 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 		# E. Duplicate Broadcasts under the campaign
 		if frappe.db.exists("DocType", "Broadcast"):
 			old_broadcasts = frappe.get_all("Broadcast", filters={"campaign": name}, pluck="name")
+			old_blasts_set = set(old_blasts)
 			for old_b_name in old_broadcasts:
 				old_b = frappe.get_doc("Broadcast", old_b_name)
-				# Do not duplicate a Broadcast that is the migrated copy of a legacy blast being duplicated
-				if old_b.legacy_doctype and old_b.legacy_name:
-					if (old_b.legacy_doctype == "Bulk WhatsApp Message" and old_b.legacy_name in old_blasts) or (
-						frappe.db.table_exists(old_b.legacy_doctype)
-						and frappe.db.exists(old_b.legacy_doctype, old_b.legacy_name)
-					):
-						continue
+				# Do not duplicate a Broadcast that is the migrated copy of a legacy blast being duplicated in this call
+				if (
+					old_b.legacy_doctype == "Bulk WhatsApp Message"
+					and old_b.legacy_name in old_blasts_set
+				):
+					continue
 
 				new_b = frappe.copy_doc(old_b)
 				new_b.campaign = new_mc.name
