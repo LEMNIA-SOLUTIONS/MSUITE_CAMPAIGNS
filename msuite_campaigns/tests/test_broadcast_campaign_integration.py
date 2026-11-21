@@ -196,11 +196,12 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		reference_name: str,
 		status: str = "sent",
 		date_str: str | None = None,
+		channel_type: str = "WhatsApp",
 	) -> "Document":
 		"""Create a test Channel Message row."""
 		cm = frappe.get_doc({
 			"doctype": "Channel Message",
-			"channel_type": "WhatsApp",
+			"channel_type": channel_type,
 			"direction": "Outbound",
 			"content_type": "Text",
 			"reference_doctype": reference_doctype,
@@ -1197,4 +1198,95 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		)
 		self.assertIsNotNone(insight)
 		self.assertEqual(insight["total_reach"], 2)
+
+	def test_analytics_sync_counts_only_whatsapp_channel_messages(self):
+		"""A Broadcast with WhatsApp and SMS Channel Messages counts only the WhatsApp ones."""
+		campaign = self._make_campaign("Analytics Multi Channel Campaign")
+		today_str = frappe.utils.today()
+
+		new_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Analytics Multi Channel BC",
+			total_recipients=50,
+			channels=[
+				{"channel": "WhatsApp", "recipient_count": 25, "status": "Completed"},
+				{"channel": "SMS", "recipient_count": 25, "status": "Completed"},
+			],
+		)
+
+		# 1 delivered WhatsApp message, 1 delivered SMS message
+		self._make_channel_message("Broadcast", new_bc.name, "delivered", today_str, channel_type="WhatsApp")
+		self._make_channel_message("Broadcast", new_bc.name, "delivered", today_str, channel_type="SMS")
+
+		sync_marketing_campaign_insights(campaign.name)
+
+		insight = frappe.db.get_value(
+			"Marketing Campaign Insight",
+			{"marketing_campaign": campaign.name, "granularity": "LIFETIME"},
+			["whatsapp_delivered", "total_reach"],
+			as_dict=True,
+		)
+		self.assertIsNotNone(insight)
+		self.assertEqual(insight["whatsapp_delivered"], 1)
+
+	def test_list_channels_legacy_blast_not_exposed_to_email_only_user(self):
+		"""Email-only user cannot see legacy Bulk WhatsApp Message rows in list_channels."""
+		campaign = self._make_campaign("Legacy Perm Isolated Campaign")
+		legacy_blast = self._make_bulk_whatsapp(campaign.name, "Legacy WA For Email User")
+
+		test_user = "test-email-user-ch@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc({
+				"doctype": "User",
+				"email": test_user,
+				"first_name": "EmailOnlyUser",
+				"send_welcome_email": 0,
+				"roles": [{"role": "Email User"}],
+			}).insert(ignore_permissions=True)
+		else:
+			u = frappe.get_doc("User", test_user)
+			u.roles = []
+			u.append("roles", {"role": "Email User"})
+			u.save(ignore_permissions=True)
+
+		frappe.set_user(test_user)
+		try:
+			channels = list_channels(campaign.name)
+			wa_names = [r["name"] for r in channels.get("whatsapp", [])]
+			self.assertNotIn(legacy_blast.name, wa_names)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_list_channels_migrated_blast_unreadable_broadcast_skipped(self):
+		"""If a legacy blast resolves to a Broadcast the user cannot read, skip it, do not fall through to legacy row."""
+		campaign = self._make_campaign("Unreadable Migrated Campaign")
+		old_blast = self._make_bulk_whatsapp(campaign.name, "Unreadable Migrated Blast")
+		migrated_bc = self._make_broadcast(
+			campaign=campaign.name,
+			title="Migrated But Unreadable BC",
+			legacy_doctype="Bulk WhatsApp Message",
+			legacy_name=old_blast.name,
+			channels=[{"channel": "WhatsApp"}],
+		)
+
+		test_user = "test-wa-user-no-read@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc({
+				"doctype": "User",
+				"email": test_user,
+				"first_name": "WANoReadUser",
+				"send_welcome_email": 0,
+				"roles": [{"role": "WhatsApp Manager"}],
+			}).insert(ignore_permissions=True)
+
+		with patch("msuite_campaigns.broadcast.permissions.permitted_channels", return_value={"WhatsApp"}):
+			with patch("frappe.has_permission", side_effect=lambda doctype, ptype="read", doc=None: False if doctype == "Broadcast" else True):
+				frappe.set_user(test_user)
+				try:
+					channels = list_channels(campaign.name)
+					wa_names = [r["name"] for r in channels.get("whatsapp", [])]
+					self.assertNotIn(migrated_bc.name, wa_names)
+					self.assertNotIn(old_blast.name, wa_names)
+				finally:
+					frappe.set_user("Administrator")
 

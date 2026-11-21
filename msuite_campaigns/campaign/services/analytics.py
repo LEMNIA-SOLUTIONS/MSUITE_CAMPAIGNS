@@ -51,6 +51,8 @@ from msuite_core.utils.insight_keys import (
 # cumulative figure paired with `budget`, not a windowed one.
 _LIFETIME_DAYS = 36500
 
+CHANNEL_TYPE_WHATSAPP = "WhatsApp"
+
 
 def check_campaign_setup(campaign: str) -> dict:
 	"""Setup-progress probe — ready the moment the Campaign has basics
@@ -1073,6 +1075,22 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 	if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
 		whatsapp_blasts = frappe.get_all("Bulk WhatsApp Message", filters={"campaign": campaign}, pluck="name")
 
+	# Compute repointed_bcs once before daily sync loop
+	repointed_bcs = set()
+	if broadcast_names and frappe.db.table_exists("Channel Message"):
+		repointed_bcs = set(
+			frappe.db.sql_list(
+				"""
+				SELECT DISTINCT reference_name
+				FROM `tabChannel Message`
+				WHERE reference_doctype = 'Broadcast'
+				  AND reference_name IN %(broadcasts)s
+				  AND channel_type = %(channel_type)s
+				""",
+				{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+			)
+		)
+
 	# Sync DAY rows
 	delta = timedelta(days=1)
 	while current_date <= sync_end:
@@ -1085,6 +1103,7 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 			whatsapp_blasts,
 			ad_campaign_names=ad_campaign_names,
 			broadcast_names=broadcast_names,
+			repointed_bcs=repointed_bcs,
 		)
 		current_date += delta
 
@@ -1096,6 +1115,7 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 		whatsapp_blasts,
 		ad_campaign_names=ad_campaign_names,
 		broadcast_names=broadcast_names,
+		repointed_bcs=repointed_bcs,
 	)
 
 	# Roll up older days into week rows
@@ -1110,6 +1130,7 @@ def _sync_campaign_day(
 	whatsapp_blasts: list[str],
 	ad_campaign_names: list[str] | None = None,
 	broadcast_names: list[str] | None = None,
+	repointed_bcs: set[str] | None = None,
 ) -> None:
 	"""Compute and save a single DAY row for a campaign on date_str.
 
@@ -1328,18 +1349,21 @@ def _sync_campaign_day(
 			params["broadcasts"] = tuple(broadcast_names)
 
 		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
-		repointed_bcs = set()
-		if broadcast_names and frappe.db.table_exists("Channel Message"):
-			repointed_bcs = set(
-				frappe.db.sql_list(
-					"""
-					SELECT DISTINCT reference_name
-					FROM `tabChannel Message`
-					WHERE reference_doctype = 'Broadcast' AND reference_name IN %(broadcasts)s
-					""",
-					{"broadcasts": tuple(broadcast_names)},
+		if repointed_bcs is None:
+			repointed_bcs = set()
+			if broadcast_names and frappe.db.table_exists("Channel Message"):
+				repointed_bcs = set(
+					frappe.db.sql_list(
+						"""
+						SELECT DISTINCT reference_name
+						FROM `tabChannel Message`
+						WHERE reference_doctype = 'Broadcast'
+						  AND reference_name IN %(broadcasts)s
+						  AND channel_type = %(channel_type)s
+						""",
+						{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+					)
 				)
-			)
 
 		legacy_cm_blasts = list(unmigrated_blasts)
 		for blast in migrated_legacy:
@@ -1353,6 +1377,7 @@ def _sync_campaign_day(
 
 		if conditions and frappe.db.table_exists("Channel Message"):
 			where_clause = " OR ".join(conditions)
+			params["channel_type"] = CHANNEL_TYPE_WHATSAPP
 			msg_stats = frappe.db.sql(
 				f"""
 				SELECT
@@ -1362,6 +1387,7 @@ def _sync_campaign_day(
 					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
 				FROM `tabChannel Message`
 				WHERE reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')
+				  AND channel_type = %(channel_type)s
 				  AND ({where_clause})
 				  AND DATE(creation) = %(date)s
 				""",
@@ -1456,6 +1482,7 @@ def _sync_campaign_lifetime(
 	whatsapp_blasts: list[str],
 	ad_campaign_names: list[str] | None = None,
 	broadcast_names: list[str] | None = None,
+	repointed_bcs: set[str] | None = None,
 ) -> None:
 	"""Compute and upsert the single LIFETIME row for a campaign across all channels.
 
@@ -1659,18 +1686,21 @@ def _sync_campaign_lifetime(
 			params["broadcasts"] = tuple(broadcast_names)
 
 		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
-		repointed_bcs = set()
-		if broadcast_names and frappe.db.table_exists("Channel Message"):
-			repointed_bcs = set(
-				frappe.db.sql_list(
-					"""
-					SELECT DISTINCT reference_name
-					FROM `tabChannel Message`
-					WHERE reference_doctype = 'Broadcast' AND reference_name IN %(broadcasts)s
-					""",
-					{"broadcasts": tuple(broadcast_names)},
+		if repointed_bcs is None:
+			repointed_bcs = set()
+			if broadcast_names and frappe.db.table_exists("Channel Message"):
+				repointed_bcs = set(
+					frappe.db.sql_list(
+						"""
+						SELECT DISTINCT reference_name
+						FROM `tabChannel Message`
+						WHERE reference_doctype = 'Broadcast'
+						  AND reference_name IN %(broadcasts)s
+						  AND channel_type = %(channel_type)s
+						""",
+						{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+					)
 				)
-			)
 
 		legacy_cm_blasts = list(unmigrated_blasts)
 		for blast in migrated_legacy:
@@ -1684,6 +1714,7 @@ def _sync_campaign_lifetime(
 
 		if conditions and frappe.db.table_exists("Channel Message"):
 			where_clause = " OR ".join(conditions)
+			params["channel_type"] = CHANNEL_TYPE_WHATSAPP
 			msg_stats = frappe.db.sql(
 				f"""
 				SELECT
@@ -1693,6 +1724,7 @@ def _sync_campaign_lifetime(
 					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
 				FROM `tabChannel Message`
 				WHERE reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')
+				  AND channel_type = %(channel_type)s
 				  AND ({where_clause})
 				""",
 				params,

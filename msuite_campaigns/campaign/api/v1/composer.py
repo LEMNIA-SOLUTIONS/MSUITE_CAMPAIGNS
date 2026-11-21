@@ -227,12 +227,14 @@ def list_channels(campaign: str = "") -> dict:
 	whatsapp = []
 	seen_broadcast_names = set()
 
-	# 1. New Broadcasts
-	if frappe.db.exists("DocType", "Broadcast"):
-		from msuite_campaigns.broadcast.permissions import permitted_channels
+	from msuite_campaigns.broadcast.permissions import permitted_channels
 
-		user_channels = permitted_channels(frappe.session.user)
-		if "WhatsApp" in user_channels and frappe.has_permission("Broadcast", "read"):
+	user_channels = permitted_channels(frappe.session.user)
+	has_wa_perm = "WhatsApp" in user_channels
+
+	# 1. New Broadcasts
+	if frappe.db.exists("DocType", "Broadcast") and has_wa_perm:
+		if frappe.has_permission("Broadcast", "read"):
 			candidate_bcs = frappe.get_list(
 				"Broadcast",
 				filters={"campaign": campaign},
@@ -278,9 +280,8 @@ def list_channels(campaign: str = "") -> dict:
 					seen_broadcast_names.add(b_name)
 
 	# 2. Legacy Bulk WhatsApp Message (additive, avoid duplicates)
-	if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+	if frappe.db.exists("DocType", "Bulk WhatsApp Message") and has_wa_perm:
 		from msuite_campaigns.broadcast.legacy import resolve
-		from msuite_campaigns.broadcast.permissions import permitted_channels
 
 		wa_meta = frappe.get_meta("Bulk WhatsApp Message")
 		schedule_field = (
@@ -313,8 +314,7 @@ def list_channels(campaign: str = "") -> dict:
 
 				# If resolved to a Broadcast not yet loaded in candidate_bcs, load it as Broadcast if readable
 				if frappe.db.exists("Broadcast", resolved_bc):
-					user_channels = permitted_channels(frappe.session.user)
-					if "WhatsApp" in user_channels and frappe.has_permission("Broadcast", "read", doc=resolved_bc):
+					if frappe.has_permission("Broadcast", "read", doc=resolved_bc):
 						has_wa_channel = True
 						ch_row = None
 						if frappe.db.exists("DocType", "Broadcast Channel"):
@@ -348,7 +348,8 @@ def list_channels(campaign: str = "") -> dict:
 									}
 								)
 								seen_broadcast_names.add(resolved_bc)
-								continue
+				# Migrated blast must never fall through to legacy row, even if unreadable
+				continue
 
 			# Unmigrated legacy blast
 			whatsapp.append(
