@@ -99,6 +99,21 @@ def _is_any_legacy_doctype_present() -> bool:
 	return False
 
 
+def _is_any_legacy_table_present() -> bool:
+	"""Check whether any legacy bulk or recipient list database table exists.
+
+	Returns:
+		bool: True if at least one legacy table is present, False otherwise.
+
+	Side effects:
+		None (read-only queries).
+	"""
+	for doctype in LEGACY_DOCTYPES_DELETE_ORDER:
+		if frappe.db.table_exists(doctype):
+			return True
+	return False
+
+
 def _empty_table(doctype: str) -> None:
 	"""Delete all rows from the specified DocType's database table if it exists.
 
@@ -130,9 +145,9 @@ def execute(confirm_delete: int = 0, dry_run: bool = True) -> dict:
 		2. Asserts migration.verify() reports zero mismatches for all legacy doctypes.
 		3. Asserts migration.run(dry_run=False) creates nothing new (delta check).
 		4. Repoints legacy references via legacy.repoint_legacy_references(dry_run=False).
-		5. Empties tables and deletes DocTypes in dependency order (children first).
+		5. Empties tables, deletes DocTypes in dependency order, and drops tables.
 
-	When executed on a site where all legacy doctypes are already absent,
+	When executed on a site where all legacy doctypes and leftover tables are already absent,
 	acts as an idempotent no-op and returns an EmptyPlan.
 
 	Args:
@@ -149,11 +164,15 @@ def execute(confirm_delete: int = 0, dry_run: bool = True) -> dict:
 
 	Side effects:
 		When dry_run=False: updates references in tabChannel Message, tabBroadcast,
-		tabMSuite Email Unsubscribe; empties tables; deletes legacy DocType records.
-		When dry_run=True or absent doctypes: no database modifications.
+		tabMSuite Email Unsubscribe; empties tables; deletes legacy DocType records;
+		drops leftover database tables (DDL commits implicitly).
+		When dry_run=True or absent doctypes/tables: no database modifications.
 	"""
-	# Idempotent guard: if legacy doctypes are already absent, no-op
-	if not _is_any_legacy_doctype_present():
+	doctype_present = _is_any_legacy_doctype_present()
+	table_present = _is_any_legacy_table_present()
+
+	# Idempotent guard: if legacy doctypes and leftover tables are already absent, no-op
+	if not doctype_present and not table_present:
 		return EmptyPlan({
 			"verify": {},
 			"would_delete": [],
@@ -161,8 +180,8 @@ def execute(confirm_delete: int = 0, dry_run: bool = True) -> dict:
 		})
 
 	if dry_run:
-		verify_results = migration.verify()
-		repoint_plan = legacy.repoint_legacy_references(dry_run=True)
+		verify_results = migration.verify() if doctype_present else {}
+		repoint_plan = legacy.repoint_legacy_references(dry_run=True) if doctype_present else {}
 		return {
 			"verify": verify_results,
 			"would_delete": list(LEGACY_DOCTYPES_DELETE_ORDER),
@@ -177,56 +196,64 @@ def execute(confirm_delete: int = 0, dry_run: bool = True) -> dict:
 			frappe.ValidationError,
 		)
 
-	# (2) migration.verify() must report ZERO mismatches for every legacy doctype
-	verify_results = migration.verify()
-	mismatches = {
-		dt: data.get("mismatches", 0)
-		for dt, data in verify_results.items()
-		if data.get("mismatches", 0) > 0
-	}
-	if mismatches:
-		frappe.throw(
-			_("Migration verification reported mismatches for legacy doctypes: {0}").format(mismatches),
-			frappe.ValidationError,
-		)
+	if doctype_present:
+		# (2) migration.verify() must report ZERO mismatches for every legacy doctype
+		verify_results = migration.verify()
+		mismatches = {
+			dt: data.get("mismatches", 0)
+			for dt, data in verify_results.items()
+			if data.get("mismatches", 0) > 0
+		}
+		if mismatches:
+			frappe.throw(
+				_("Migration verification reported mismatches for legacy doctypes: {0}").format(mismatches),
+				frappe.ValidationError,
+			)
 
-	# (3) migration.run(dry_run=False) must create nothing new (delta check)
-	delta_report = migration.run(dry_run=False)
-	created_lists = {
-		dt: data.get("migrated", 0)
-		for dt, data in delta_report.get("recipient_lists", {}).items()
-		if data.get("migrated", 0) > 0
-	}
-	created_broadcasts = {
-		dt: data.get("migrated", 0)
-		for dt, data in delta_report.get("broadcasts", {}).items()
-		if data.get("migrated", 0) > 0
-	}
-	created_recipients = delta_report.get("recipients", 0)
+		# (3) migration.run(dry_run=False) must create nothing new (delta check)
+		delta_report = migration.run(dry_run=False)
+		created_lists = {
+			dt: data.get("migrated", 0)
+			for dt, data in delta_report.get("recipient_lists", {}).items()
+			if data.get("migrated", 0) > 0
+		}
+		created_broadcasts = {
+			dt: data.get("migrated", 0)
+			for dt, data in delta_report.get("broadcasts", {}).items()
+			if data.get("migrated", 0) > 0
+		}
+		created_recipients = delta_report.get("recipients", 0)
 
-	if created_lists or created_broadcasts or created_recipients > 0:
-		missing: list[str] = []
-		if created_lists:
-			missing.append(f"recipient lists: {created_lists}")
-		if created_broadcasts:
-			missing.append(f"broadcasts: {created_broadcasts}")
-		if created_recipients > 0:
-			missing.append(f"recipients: {created_recipients}")
-		frappe.throw(
-			_("Migration delta check created new records ({0}); legacy deletion aborted").format(
-				", ".join(missing)
-			),
-			frappe.ValidationError,
-		)
+		if created_lists or created_broadcasts or created_recipients > 0:
+			missing: list[str] = []
+			if created_lists:
+				missing.append(f"recipient lists: {created_lists}")
+			if created_broadcasts:
+				missing.append(f"broadcasts: {created_broadcasts}")
+			if created_recipients > 0:
+				missing.append(f"recipients: {created_recipients}")
+			frappe.throw(
+				_("Migration delta check created new records ({0}); legacy deletion aborted").format(
+					", ".join(missing)
+				),
+				frappe.ValidationError,
+			)
 
-	# (4) Repoint legacy references
-	repoint_summary = legacy.repoint_legacy_references(dry_run=False)
+		# (4) Repoint legacy references
+		repoint_summary = legacy.repoint_legacy_references(dry_run=False)
+	else:
+		verify_results = {}
+		repoint_summary = {}
 
-	# (5) Delete legacy data and DocTypes in dependency order
+	# (5) Delete legacy data, DocTypes, and drop tables in dependency order
 	deleted_doctypes: list[str] = []
 	for doctype in LEGACY_DOCTYPES_DELETE_ORDER:
-		_empty_table(doctype)
-		frappe.delete_doc("DocType", doctype, force=True, ignore_missing=True)
+		if doctype_present:
+			_empty_table(doctype)
+			frappe.delete_doc("DocType", doctype, force=True, ignore_missing=True)
+		if frappe.db.table_exists(doctype):
+			# Note: DDL statements (DROP TABLE) commit transactions implicitly in MySQL/MariaDB
+			frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `tab{doctype}`")
 		deleted_doctypes.append(doctype)
 
 	return {

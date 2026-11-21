@@ -47,7 +47,8 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 		Side effects:
 			None.
 		"""
-		with patch.object(frappe, "delete_doc") as mock_delete_doc:
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=True), \
+			patch.object(frappe, "delete_doc") as mock_delete_doc:
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				delete_legacy_bulk_doctypes.execute(confirm_delete=0, dry_run=False)
 
@@ -72,7 +73,8 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 			"Bulk SMS Message": {"old_count": 0, "migrated_count": 0, "mismatches": 0},
 		}
 
-		with patch("msuite_campaigns.broadcast.migration.verify", return_value=mismatched_verify), \
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=True), \
+			patch("msuite_campaigns.broadcast.migration.verify", return_value=mismatched_verify), \
 			patch.object(frappe, "delete_doc") as mock_delete_doc:
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				delete_legacy_bulk_doctypes.execute(confirm_delete=1, dry_run=False)
@@ -112,7 +114,8 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 			"recipients": 5,
 		}
 
-		with patch("msuite_campaigns.broadcast.migration.verify", return_value=clean_verify), \
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=True), \
+			patch("msuite_campaigns.broadcast.migration.verify", return_value=clean_verify), \
 			patch("msuite_campaigns.broadcast.migration.run", return_value=delta_with_creations), \
 			patch.object(frappe, "delete_doc") as mock_delete_doc:
 			with self.assertRaises(frappe.ValidationError) as ctx:
@@ -142,12 +145,19 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 			"Audience",
 		]
 
-		with patch.object(frappe, "delete_doc") as mock_delete_doc, \
-			patch.object(delete_legacy_bulk_doctypes, "_empty_table") as mock_empty_table:
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=True), \
+			patch("msuite_campaigns.broadcast.migration.verify", return_value={}) as mock_verify, \
+			patch("msuite_campaigns.broadcast.legacy.repoint_legacy_references", return_value={}) as mock_repoint, \
+			patch.object(frappe, "delete_doc") as mock_delete_doc, \
+			patch.object(delete_legacy_bulk_doctypes, "_empty_table") as mock_empty_table, \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl:
 			plan = delete_legacy_bulk_doctypes.execute(confirm_delete=0, dry_run=True)
 
 			mock_delete_doc.assert_not_called()
 			mock_empty_table.assert_not_called()
+			mock_sql_ddl.assert_not_called()
+			mock_verify.assert_called_once()
+			mock_repoint.assert_called_once_with(dry_run=True)
 
 			self.assertIn("would_delete", plan)
 			self.assertIn("verify", plan)
@@ -187,20 +197,76 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 		Side effects:
 			None.
 		"""
-		with patch.object(frappe.db, "exists", return_value=False), \
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=False), \
+			patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_table_present", return_value=False), \
 			patch.object(frappe, "delete_doc") as mock_delete_doc, \
-			patch.object(delete_legacy_bulk_doctypes, "_empty_table") as mock_empty_table:
+			patch.object(delete_legacy_bulk_doctypes, "_empty_table") as mock_empty_table, \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl:
 			# Test dry run mode
 			plan_dry = delete_legacy_bulk_doctypes.execute(confirm_delete=0, dry_run=True)
 			mock_delete_doc.assert_not_called()
 			mock_empty_table.assert_not_called()
+			mock_sql_ddl.assert_not_called()
 			self.assertEqual(plan_dry.get("would_delete"), [])
 
 			# Test live execution mode
 			plan_live = delete_legacy_bulk_doctypes.execute(confirm_delete=1, dry_run=False)
 			mock_delete_doc.assert_not_called()
 			mock_empty_table.assert_not_called()
+			mock_sql_ddl.assert_not_called()
 			self.assertEqual(plan_live.get("would_delete"), [])
+
+	def test_absent_doctype_leftover_table_drops_tables(self) -> None:
+		"""Verify absent doctype + leftover table drops leftover tables in live mode.
+
+		Side effects:
+			None (sql_ddl is mocked).
+		"""
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=False), \
+			patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_table_present", return_value=True), \
+			patch.object(frappe.db, "table_exists", return_value=True), \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl, \
+			patch.object(frappe, "delete_doc") as mock_delete_doc:
+
+			res = delete_legacy_bulk_doctypes.execute(confirm_delete=1, dry_run=False)
+
+			mock_delete_doc.assert_not_called()
+			expected_calls = [
+				call(f"DROP TABLE IF EXISTS `tab{dt}`")
+				for dt in delete_legacy_bulk_doctypes.LEGACY_DOCTYPES_DELETE_ORDER
+			]
+			mock_sql_ddl.assert_has_calls(expected_calls)
+			self.assertEqual(mock_sql_ddl.call_count, len(delete_legacy_bulk_doctypes.LEGACY_DOCTYPES_DELETE_ORDER))
+			self.assertEqual(res["deleted"], list(delete_legacy_bulk_doctypes.LEGACY_DOCTYPES_DELETE_ORDER))
+
+	def test_absent_doctype_leftover_table_dry_run_drops_nothing(self) -> None:
+		"""Verify absent doctype + leftover table in dry_run drops nothing.
+
+		Side effects:
+			None.
+		"""
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=False), \
+			patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_table_present", return_value=True), \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl, \
+			patch.object(frappe, "delete_doc") as mock_delete_doc:
+
+			plan = delete_legacy_bulk_doctypes.execute(confirm_delete=0, dry_run=True)
+
+			mock_sql_ddl.assert_not_called()
+			mock_delete_doc.assert_not_called()
+			self.assertEqual(plan["would_delete"], list(delete_legacy_bulk_doctypes.LEGACY_DOCTYPES_DELETE_ORDER))
+
+	def test_clean_site_noop(self) -> None:
+		"""Verify clean site (neither doctypes nor tables) is an idempotent no-op."""
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=False), \
+			patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_table_present", return_value=False), \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl, \
+			patch.object(frappe, "delete_doc") as mock_delete_doc:
+
+			res = delete_legacy_bulk_doctypes.execute(confirm_delete=1, dry_run=False)
+			mock_sql_ddl.assert_not_called()
+			mock_delete_doc.assert_not_called()
+			self.assertEqual(res.get("would_delete"), [])
 
 	def test_confirmed_execution_deletes_in_order_and_repoints(self) -> None:
 		"""Verify confirmed live execution verifies, repoints, empties tables, and deletes doctypes in order.
@@ -260,7 +326,10 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 		def fake_empty_table(doctype: str) -> None:
 			emptied_order.append(doctype)
 
-		with patch("msuite_campaigns.broadcast.migration.verify", return_value=clean_verify), \
+		with patch.object(delete_legacy_bulk_doctypes, "_is_any_legacy_doctype_present", return_value=True), \
+			patch.object(frappe.db, "table_exists", return_value=True), \
+			patch.object(frappe.db, "sql_ddl") as mock_sql_ddl, \
+			patch("msuite_campaigns.broadcast.migration.verify", return_value=clean_verify), \
 			patch("msuite_campaigns.broadcast.migration.run", return_value=clean_delta), \
 			patch("msuite_campaigns.broadcast.legacy.repoint_legacy_references", return_value=repoint_result) as mock_repoint, \
 			patch.object(frappe, "delete_doc", side_effect=fake_delete_doc), \
@@ -271,5 +340,8 @@ class TestDeleteLegacyGuard(IntegrationTestCase):
 			mock_repoint.assert_called_once_with(dry_run=False)
 			self.assertEqual(emptied_order, expected_order)
 			self.assertEqual(deleted_order, expected_order)
+			expected_calls = [call(f"DROP TABLE IF EXISTS `tab{dt}`") for dt in expected_order]
+			mock_sql_ddl.assert_has_calls(expected_calls)
+			self.assertEqual(mock_sql_ddl.call_count, len(expected_order))
 			self.assertIn("deleted", result)
 			self.assertEqual(result["deleted"], expected_order)
