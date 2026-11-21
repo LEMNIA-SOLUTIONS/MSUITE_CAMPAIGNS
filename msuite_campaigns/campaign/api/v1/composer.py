@@ -99,16 +99,27 @@ def check_campaign_name(name: str = "", exclude: str = "") -> dict:
 def list_channels(campaign: str = "") -> dict:
 	"""Children linked to this Campaign, grouped by channel type.
 
-	Returns:
-	  {
-	    "social":   [{name, title, status, platform_count, scheduled_at}],
-	    "ads":      [{name, ad_campaign_name, status, platform, objective}],
-	    "whatsapp": [{name, status, recipients_count, scheduled_at}]
-	  }
+	WhatsApp children come from Broadcast rows with campaign = <campaign>
+	that have a WhatsApp Broadcast Channel row, respecting the caller's read
+	permission. Legacy Bulk WhatsApp Message rows are also included when the old
+	doctype exists (additive, deduplicated against migrated Broadcasts).
 
-	Used by the Channels tab card grid — clicking a row navigates to
-	the relevant composer; clicking "+ New" creates one scoped to this
-	Campaign via the existing `?parent_campaign=` query param.
+	Args:
+		campaign: Name of the Marketing Campaign.
+
+	Returns:
+		dict: Grouped children dictionary:
+		  {
+		    "social":   [{name, title, status, platform_count, scheduled_at}],
+		    "ads":      [{name, ad_campaign_name, status, platform, objective}],
+		    "whatsapp": [{name, title, status, scheduled_at, recipients_count, recipient_count, is_paused}]
+		  }
+
+	Raises:
+		frappe.PermissionError: If caller lacks read permission on the Marketing Campaign.
+
+	Side effects:
+		None (read-only query).
 	"""
 	if not campaign:
 		return {"social": [], "ads": [], "whatsapp": []}
@@ -211,15 +222,66 @@ def list_channels(campaign: str = "") -> dict:
 			limit=50,
 		)
 
-	# WhatsApp Broadcasts — 1:N via `Bulk WhatsApp Message.campaign`
-	# (replaces the old single `Marketing Campaign.whatsapp_blast`
-	# link; see patches.add_campaign_link_to_bulk_whatsapp_message).
-	# Schedule column name drifts across app variants (current
-	# `scheduled_time` vs legacy `scheduled_at`), so resolve it from
-	# meta rather than hard-coding — otherwise the whole channels list
-	# 500s on installs that don't have the column we picked.
+	# WhatsApp Broadcasts — Broadcast rows with campaign = campaign and a WhatsApp channel,
+	# plus legacy Bulk WhatsApp Message rows when the doctype exists (additive, deduplicated).
 	whatsapp = []
+	seen_broadcast_names = set()
+
+	# 1. New Broadcasts
+	if frappe.db.exists("DocType", "Broadcast"):
+		from msuite_campaigns.broadcast.permissions import permitted_channels
+
+		user_channels = permitted_channels(frappe.session.user)
+		if "WhatsApp" in user_channels and frappe.has_permission("Broadcast", "read"):
+			candidate_bcs = frappe.get_list(
+				"Broadcast",
+				filters={"campaign": campaign},
+				fields=["name", "title", "status", "scheduled_time", "total_recipients", "creation"],
+				order_by="creation desc",
+				limit=50,
+			)
+			if candidate_bcs:
+				bc_names = [b["name"] for b in candidate_bcs]
+				wa_channel_rows = {}
+				if frappe.db.exists("DocType", "Broadcast Channel"):
+					rows = frappe.get_all(
+						"Broadcast Channel",
+						filters={"parent": ["in", bc_names], "channel": "WhatsApp"},
+						fields=["parent", "status", "recipient_count"],
+					)
+					for r in rows:
+						wa_channel_rows[r["parent"]] = r
+				else:
+					for name in bc_names:
+						wa_channel_rows[name] = {"parent": name, "status": "Draft", "recipient_count": 0}
+
+				for b in candidate_bcs:
+					b_name = b["name"]
+					if b_name not in wa_channel_rows:
+						continue
+
+					ch_row = wa_channel_rows[b_name]
+					rec_count = ch_row.get("recipient_count") or b.get("total_recipients") or 0
+					is_paused = 1 if (b.get("status") == "Paused" or ch_row.get("status") == "Paused") else 0
+
+					whatsapp.append(
+						{
+							"name": b_name,
+							"title": b.get("title") or "",
+							"status": b.get("status") or ch_row.get("status") or "Draft",
+							"scheduled_at": _iso(b.get("scheduled_time")),
+							"recipients_count": rec_count,
+							"recipient_count": rec_count,
+							"is_paused": is_paused,
+						}
+					)
+					seen_broadcast_names.add(b_name)
+
+	# 2. Legacy Bulk WhatsApp Message (additive, avoid duplicates)
 	if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+		from msuite_campaigns.broadcast.legacy import resolve
+		from msuite_campaigns.broadcast.permissions import permitted_channels
+
 		wa_meta = frappe.get_meta("Bulk WhatsApp Message")
 		schedule_field = (
 			"scheduled_time"
@@ -241,19 +303,65 @@ def list_channels(campaign: str = "") -> dict:
 			order_by="creation desc",
 			limit=50,
 		)
-		whatsapp = [
-			{
-				"name": wa.get("name"),
-				"title": wa.get("title") or "",
-				"status": wa.get("status") or "Draft",
-				# SPA reads `scheduled_at`; normalise here so the
-				# frontend never sees the schema drift.
-				"scheduled_at": _iso(wa.get(schedule_field)) if schedule_field else "",
-				"recipients_count": wa.get("recipient_count") or 0,
-				"is_paused": int(wa.get("is_paused") or 0),
-			}
-			for wa in blasts
-		]
+		for wa in blasts:
+			wa_name = wa.get("name")
+			resolved_bc = resolve("Bulk WhatsApp Message", wa_name)
+			if resolved_bc:
+				# If already shown as a Broadcast, skip to avoid duplicate
+				if resolved_bc in seen_broadcast_names:
+					continue
+
+				# If resolved to a Broadcast not yet loaded in candidate_bcs, load it as Broadcast if readable
+				if frappe.db.exists("Broadcast", resolved_bc):
+					user_channels = permitted_channels(frappe.session.user)
+					if "WhatsApp" in user_channels and frappe.has_permission("Broadcast", "read", doc=resolved_bc):
+						has_wa_channel = True
+						ch_row = None
+						if frappe.db.exists("DocType", "Broadcast Channel"):
+							ch_row = frappe.db.get_value(
+								"Broadcast Channel",
+								{"parent": resolved_bc, "channel": "WhatsApp"},
+								["status", "recipient_count"],
+								as_dict=True,
+							)
+							has_wa_channel = bool(ch_row)
+
+						if has_wa_channel:
+							bc_doc = frappe.db.get_value(
+								"Broadcast",
+								resolved_bc,
+								["name", "title", "status", "scheduled_time", "total_recipients"],
+								as_dict=True,
+							)
+							if bc_doc:
+								rec_count = (ch_row.get("recipient_count") if ch_row else None) or bc_doc.get("total_recipients") or 0
+								is_paused = 1 if (bc_doc.get("status") == "Paused" or (ch_row and ch_row.get("status") == "Paused")) else 0
+								whatsapp.append(
+									{
+										"name": resolved_bc,
+										"title": bc_doc.get("title") or "",
+										"status": bc_doc.get("status") or (ch_row and ch_row.get("status")) or "Draft",
+										"scheduled_at": _iso(bc_doc.get("scheduled_time")),
+										"recipients_count": rec_count,
+										"recipient_count": rec_count,
+										"is_paused": is_paused,
+									}
+								)
+								seen_broadcast_names.add(resolved_bc)
+								continue
+
+			# Unmigrated legacy blast
+			whatsapp.append(
+				{
+					"name": wa_name,
+					"title": wa.get("title") or "",
+					"status": wa.get("status") or "Draft",
+					"scheduled_at": _iso(wa.get(schedule_field)) if schedule_field else "",
+					"recipients_count": wa.get("recipient_count") or 0,
+					"recipient_count": wa.get("recipient_count") or 0,
+					"is_paused": int(wa.get("is_paused") or 0),
+				}
+			)
 
 	return {"social": social, "ads": ads, "whatsapp": whatsapp}
 

@@ -27,6 +27,10 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - Formatted Excel date cells (e.g. `dd-mmm-yy`) are preserved as text strings (e.g. `13-Nov-26`) in member `recipient_data` instead of turning into `2026-11-13 00:00:00`.
   - CSV midnight timestamps (`YYYY-MM-DD 00:00:00`) are normalized to date-only strings (`YYYY-MM-DD`).
 
+- **Unified Broadcast & Legacy Coexistence**:
+  - `list_channels(campaign)` (`campaign/api/v1/composer.py`): WhatsApp channel children read from `Broadcast` rows with WhatsApp channel, respecting caller permissions, and deduplicate against migrated `Bulk WhatsApp Message` records via `broadcast.legacy.resolve`.
+  - Campaign rollups in `analytics.py` (`sync_marketing_campaign_insights`, `_sync_campaign_day`, `_sync_campaign_lifetime`): aggregate `Channel Message` rows where `reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')` and sum recipient counts without double-counting migrated blasts.
+
 #### Campaign Validation & Activity (UAT fixes)
 - **Unique names**: a campaign name must be unique (case-insensitive). `make_unique_campaign_name` adds a numeric suffix on automatic paths (duplicate, recurring clone, dispatch hub, agent tools); a manual duplicate name is rejected with `CampaignNameExistsError` (HTTP 409; clients match the status because the site's response sanitizer removes `exc_type`).
 - **Limits**: budget is `0` to `MAX_CAMPAIGN_BUDGET` (500,000), validated in `marketing_campaign.py` and mirrored in `frontend/src/shared/constants/limits.js`. Name and UTM lengths are capped; UTM values are slugged with `slugify_utm` (lowercase, underscores).
