@@ -35,11 +35,19 @@ class TestBroadcastHub(IntegrationTestCase):
 		self.cleanup_recipient_lists: list[str] = []
 		if hasattr(frappe.local, "broadcast_channel_adapters"):
 			delattr(frappe.local, "broadcast_channel_adapters")
+		try:
+			frappe.cache.delete_keys("broadcast_aws_triggered:*")
+		except Exception:
+			pass
 
 	def tearDown(self):
 		frappe.db.rollback()
 		if hasattr(frappe.local, "broadcast_channel_adapters"):
 			delattr(frappe.local, "broadcast_channel_adapters")
+		try:
+			frappe.cache.delete_keys("broadcast_aws_triggered:*")
+		except Exception:
+			pass
 		for name in self.cleanup_broadcasts:
 			if frappe.db.exists("Broadcast", name):
 				frappe.delete_doc("Broadcast", name, force=True, ignore_permissions=True)
@@ -345,3 +353,114 @@ class TestBroadcastHub(IntegrationTestCase):
 		frappe.db.set_value("Broadcast", b.name, "status", "Queued", update_modified=False)
 		cancel_res = cancel(b.name, "WhatsApp")
 		self.assertEqual(cancel_res.get("WhatsApp"), "Cancelled")
+
+	def test_pause_aws_in_progress_row_raises(self):
+		"""hub.pause on an AWS-engine row that is already In Progress raises ValidationError."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			{"status": "In Progress", "delivery_engine": "AWS"},
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "In Progress", update_modified=False)
+
+		with patch("msuite_campaigns.broadcast.aws.should_use_aws", return_value=True):
+			with self.assertRaises(frappe.ValidationError) as cm:
+				pause(b.name, "WhatsApp")
+			self.assertIn("cannot pause after hand-off to AWS", str(cm.exception))
+
+	def test_resume_restarts_sending_for_in_progress_row_standard(self):
+		"""hub.resume restarts sending when channel row is In Progress with sent_count > 0."""
+		from msuite_campaigns.broadcast.recipients import bulk_insert_recipients
+
+		b = self._make_broadcast(channels=["WhatsApp"])
+		rec_rows = [{"address": f"+9198111{i:05d}"} for i in range(1000)]
+		bulk_insert_recipients(b.name, "WhatsApp", rec_rows)
+
+		# Simulate 100 already sent
+		recs = frappe.get_all(
+			"Broadcast Recipient",
+			filters={"broadcast": b.name, "channel": "WhatsApp"},
+			fields=["name"],
+			order_by="name asc",
+			limit=100,
+		)
+		for r in recs:
+			frappe.db.set_value("Broadcast Recipient", r.name, "status", "Sent", update_modified=False)
+
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			{"status": "Paused", "sent_count": 100},
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "Paused", update_modified=False)
+
+		with patch("msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel") as mock_enqueue:
+			res = resume(b.name, "WhatsApp")
+			self.assertEqual(res.get("WhatsApp"), "In Progress")
+			mock_enqueue.assert_called_once_with(b.name, "WhatsApp")
+
+	def test_resume_never_reexports_aws_row(self):
+		"""hub.resume never re-exports an AWS row."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			{"status": "Paused", "delivery_engine": "AWS", "sent_count": 0},
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "Paused", update_modified=False)
+
+		stub_aws = types.ModuleType("msuite_campaigns.broadcast.aws")
+		stub_aws.should_use_aws = MagicMock(return_value=True)
+		stub_aws.export_and_enqueue_channel = MagicMock()
+
+		with patch.dict(sys.modules, {"msuite_campaigns.broadcast.aws": stub_aws}):
+			res = resume(b.name, "WhatsApp")
+			stub_aws.export_and_enqueue_channel.assert_not_called()
+
+	def test_start_channel_idempotent_when_in_progress(self):
+		"""start_channel skips Queued->In Progress transition if already In Progress and dispatches."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			{"status": "In Progress", "delivery_engine": "Standard"},
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "In Progress", update_modified=False)
+
+		with patch("msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel") as mock_enqueue:
+			start_channel(b.name, "WhatsApp")
+			mock_enqueue.assert_called_once_with(b.name, "WhatsApp")
+			st = frappe.db.get_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "status")
+			self.assertEqual(st, "In Progress")
+
+	def test_start_channel_dispatch_failure_transitions_to_failed_and_sets_launch_error(self):
+		"""start_channel wraps engine dispatch: failure transitions row to Failed and sets launch_error."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			{"status": "Queued", "delivery_engine": "Standard"},
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "Queued", update_modified=False)
+
+		with patch(
+			"msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel",
+			side_effect=RuntimeError("SQS or worker queue failure"),
+		):
+			with self.assertRaises(RuntimeError):
+				start_channel(b.name, "WhatsApp")
+
+		ch_status = frappe.db.get_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "status")
+		ch_err = frappe.db.get_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "launch_error")
+		b_status = frappe.db.get_value("Broadcast", b.name, "status")
+
+		self.assertEqual(ch_status, "Failed")
+		self.assertEqual(b_status, "Failed")
+		self.assertIn("SQS or worker queue failure", ch_err)
+

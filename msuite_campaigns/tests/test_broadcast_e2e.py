@@ -66,6 +66,11 @@ def _inline_enqueue(fn: Any, *args: Any, **kwargs: Any) -> Any:
 	Side effects:
 		Executes fn immediately in current thread.
 	"""
+	if getattr(fn, "__name__", "") == "refresh_counters":
+		# Debounced counter refresh jobs are triggered in background;
+		# tests execute refresh_counters explicitly or inline where tested.
+		return None
+
 	filtered = {
 		k: v
 		for k, v in kwargs.items()
@@ -73,6 +78,7 @@ def _inline_enqueue(fn: Any, *args: Any, **kwargs: Any) -> Any:
 			"queue",
 			"timeout",
 			"job_name",
+			"job_id",
 			"deduplicate",
 			"now",
 			"enqueue_after_commit",
@@ -122,11 +128,19 @@ class TestBroadcastE2E(IntegrationTestCase):
 		self.cleanup_users: list[str] = []
 		if hasattr(frappe.local, "broadcast_channel_adapters"):
 			delattr(frappe.local, "broadcast_channel_adapters")
+		try:
+			frappe.cache.delete_keys("broadcast_aws_triggered:*")
+		except Exception:
+			pass
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
 		if hasattr(frappe.local, "broadcast_channel_adapters"):
 			delattr(frappe.local, "broadcast_channel_adapters")
+		try:
+			frappe.cache.delete_keys("broadcast_aws_triggered:*")
+		except Exception:
+			pass
 
 		for name in self.cleanup_broadcasts:
 			if frappe.db.exists("Broadcast", name):
@@ -1123,3 +1137,116 @@ class TestBroadcastE2E(IntegrationTestCase):
 		self.assertEqual(bc_count, 0, f"Leaked {bc_count} Broadcast rows with prefix {TEST_PREFIX}")
 		self.assertEqual(rl_count, 0, f"Leaked {rl_count} Recipient List rows with prefix {TEST_PREFIX}")
 		self.assertEqual(rec_count, 0, f"Leaked {rec_count} Broadcast Recipient rows with prefix {TEST_PREFIX}")
+
+	def test_10_resume_stall_and_aws_pause_guard(self):
+		"""Scenario 10: Public API pause/resume stall fix and AWS In Progress pause guard.
+
+		Verifies:
+		1. Standard engine broadcast with partial sends (3/10 Sent) paused and then resumed
+		   sends exactly the remaining 7 recipients once without stall.
+		2. AWS engine broadcast in Progress raises frappe.ValidationError on hub.pause.
+		"""
+		# 1. Standard engine: 10 recipients
+		b = self._make_broadcast(channels=[CHANNEL_WHATSAPP], status=STATUS_DRAFT)
+		addr_list = [{"address": f"+919811100{i:03d}", "recipient_name": f"User {i}"} for i in range(10)]
+		materializer.materialize(b.name, CHANNEL_WHATSAPP, individual_rows=addr_list)
+		lifecycle.launch(b.name, CHANNEL_WHATSAPP)
+		hub.start_channel(b.name, CHANNEL_WHATSAPP)
+
+		# Send first 3 recipients
+		recs = frappe.get_all(
+			"Broadcast Recipient",
+			filters={"broadcast": b.name, "channel": CHANNEL_WHATSAPP},
+			fields=["name", "address"],
+			order_by="name asc",
+		)
+		for r in recs[:3]:
+			frappe.db.set_value(
+				"Broadcast Recipient",
+				r.name,
+				{"status": "Sent", "provider_message_id": r.name},
+				update_modified=False,
+			)
+		counters.refresh_counters(b.name, CHANNEL_WHATSAPP)
+
+		# Pause mid-send
+		pause_res = hub.pause(b.name, CHANNEL_WHATSAPP)
+		self.assertEqual(pause_res[CHANNEL_WHATSAPP], STATUS_PAUSED)
+
+		# Resume: must resume sending the remaining 7 recipients
+		sent_calls: list[str] = []
+
+		def send_remaining(b_doc, c_row, r):
+			sent_calls.append(r["address"])
+			return {"status": "Sent", "provider_message_id": f"res_{r['name']}"}
+
+		adapter_wa = {
+			"channel": CHANNEL_WHATSAPP,
+			"send_one": send_remaining,
+			"validate_channel": lambda b_doc, c_row: None,
+		}
+		setattr(frappe.local, "broadcast_channel_adapters", {CHANNEL_WHATSAPP: adapter_wa})
+
+		with patch("frappe.enqueue", side_effect=_inline_enqueue):
+			resume_res = hub.resume(b.name, CHANNEL_WHATSAPP)
+
+		self.assertEqual(resume_res[CHANNEL_WHATSAPP], STATUS_IN_PROGRESS)
+		# Sent exactly the remaining 7 recipients once
+		self.assertEqual(len(sent_calls), 7)
+		remaining_addrs = [r["address"] for r in recs[3:]]
+		self.assertEqual(sent_calls, remaining_addrs)
+
+		# 2. AWS engine row in Progress: hub.pause raises ValidationError
+		b_aws = self._make_broadcast(
+			channels=[CHANNEL_WHATSAPP],
+			delivery_engine="AWS",
+			status=STATUS_IN_PROGRESS,
+		)
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b_aws.name, "channel": CHANNEL_WHATSAPP},
+			{"status": STATUS_IN_PROGRESS, "delivery_engine": "AWS"},
+			update_modified=False,
+		)
+
+		with patch("msuite_campaigns.broadcast.aws.should_use_aws", return_value=True):
+			with self.assertRaises(frappe.ValidationError) as cm:
+				hub.pause(b_aws.name, CHANNEL_WHATSAPP)
+			self.assertIn("cannot pause after hand-off to AWS", str(cm.exception))
+
+	def test_11_run_chunk_counter_refresh_completion_without_webhooks(self):
+		"""Scenario 11: Standard broadcast completes without webhooks via run_chunk refresh call.
+
+		Verifies that when adapter send_one marks recipients Sent/Failed and no webhooks
+		arrive, run_chunk calls request_counter_refresh and the channel row completes.
+		"""
+		b = self._make_broadcast(channels=[CHANNEL_WHATSAPP], status=STATUS_DRAFT)
+		addr_list = [
+			{"address": "+919811100501", "recipient_name": "Done 1"},
+			{"address": "+919811100502", "recipient_name": "Done 2"},
+		]
+		materializer.materialize(b.name, CHANNEL_WHATSAPP, individual_rows=addr_list)
+		lifecycle.launch(b.name, CHANNEL_WHATSAPP)
+
+		adapter_wa = {
+			"channel": CHANNEL_WHATSAPP,
+			"send_one": lambda b_doc, c_row, r: {"status": "Sent", "provider_message_id": f"dlv_{r['name']}"},
+			"validate_channel": lambda b_doc, c_row: None,
+		}
+		setattr(frappe.local, "broadcast_channel_adapters", {CHANNEL_WHATSAPP: adapter_wa})
+
+		with patch("frappe.enqueue", side_effect=_inline_enqueue):
+			hub.start_channel(b.name, CHANNEL_WHATSAPP)
+
+		# Run the debounced refresh job inline as specified in brief
+		counters.refresh_counters(b.name, CHANNEL_WHATSAPP)
+
+		ch_status = frappe.db.get_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": CHANNEL_WHATSAPP},
+			"status",
+		)
+		b_status = frappe.db.get_value("Broadcast", b.name, "status")
+		self.assertEqual(ch_status, STATUS_COMPLETED)
+		self.assertEqual(b_status, STATUS_COMPLETED)
+

@@ -220,3 +220,74 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		):
 			with self.assertRaises(frappe.ValidationError):
 				run_chunk(b.name, "WhatsApp", rec.name, rec.name)
+
+	def test_enqueue_broadcast_channel_passes_enqueue_after_commit(self):
+		"""enqueue_broadcast_channel passes enqueue_after_commit=True to frappe.enqueue."""
+		b = self._make_broadcast()
+		bulk_insert_recipients(b.name, "WhatsApp", [{"address": "+919811100010"}])
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			enqueue_broadcast_channel(b.name, "WhatsApp")
+			mock_enqueue.assert_called_once()
+			self.assertTrue(mock_enqueue.call_args[1].get("enqueue_after_commit"))
+
+	def test_run_chunk_calls_request_counter_refresh(self):
+		"""run_chunk calls counters.request_counter_refresh before returning and when stopped."""
+		b = self._make_broadcast()
+		bulk_insert_recipients(b.name, "WhatsApp", [{"address": "+919811100020"}])
+		rec = frappe.get_all("Broadcast Recipient", filters={"broadcast": b.name}, fields=["name"])[0]
+
+		mock_adapter = {
+			"channel": "WhatsApp",
+			"send_one": lambda b_doc, c_row, r: {"status": "Sent", "provider_message_id": "wa_msg_1"},
+		}
+
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=mock_adapter):
+			with patch("msuite_campaigns.broadcast.counters.request_counter_refresh") as mock_refresh:
+				run_chunk(b.name, "WhatsApp", rec.name, rec.name)
+				mock_refresh.assert_called_once_with(b.name, "WhatsApp")
+
+		# Early exit when channel inactive also requests refresh
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			"status",
+			"Paused",
+			update_modified=False,
+		)
+		with patch("msuite_campaigns.broadcast.counters.request_counter_refresh") as mock_refresh:
+			res = run_chunk(b.name, "WhatsApp", rec.name, rec.name)
+			self.assertTrue(res.get("stopped"))
+			mock_refresh.assert_called_once_with(b.name, "WhatsApp")
+
+	def test_standard_broadcast_completes_without_webhooks(self):
+		"""A Standard-engine broadcast whose send_one marks every recipient Sent ends Completed."""
+		from msuite_campaigns.broadcast.counters import refresh_counters
+
+		b = self._make_broadcast(status="In Progress", channel_status="In Progress")
+		bulk_insert_recipients(
+			b.name,
+			"WhatsApp",
+			[{"address": "+919811100031"}, {"address": "+919811100032"}],
+		)
+		recs = frappe.get_all(
+			"Broadcast Recipient",
+			filters={"broadcast": b.name, "channel": "WhatsApp"},
+			fields=["name"],
+			order_by="name asc",
+		)
+
+		mock_adapter = {
+			"channel": "WhatsApp",
+			"send_one": lambda b_doc, c_row, r: {"status": "Sent", "provider_message_id": f"msg_{r['name']}"},
+		}
+
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=mock_adapter):
+			with patch("msuite_campaigns.broadcast.counters.request_counter_refresh", side_effect=refresh_counters):
+				run_chunk(b.name, "WhatsApp", recs[0].name, recs[-1].name)
+
+		ch_status = frappe.db.get_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "status")
+		b_status = frappe.db.get_value("Broadcast", b.name, "status")
+		self.assertEqual(ch_status, "Completed")
+		self.assertEqual(b_status, "Completed")
+

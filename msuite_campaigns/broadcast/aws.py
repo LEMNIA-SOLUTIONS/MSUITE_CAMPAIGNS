@@ -34,10 +34,11 @@ def dynamo_campaign_id(broadcast_doc: Any, channel: str) -> str:
 	"""Return the DynamoDB analytics key for a broadcast doc and channel.
 
 	A migrated blast keeps the key its in-flight AWS analytics already use.
-	Uses broadcast_doc.campaign or broadcast_doc.legacy_name or broadcast_doc.name.
+	Uses broadcast_doc.campaign or broadcast_doc.legacy_name or broadcast_doc.name,
+	or accepts a broadcast name string directly.
 
 	Args:
-		broadcast_doc: Broadcast document instance or dict-like object.
+		broadcast_doc: Broadcast document instance, dict-like object, or name string.
 		channel: Channel name ("WhatsApp", "Email", or "SMS").
 
 	Returns:
@@ -49,6 +50,9 @@ def dynamo_campaign_id(broadcast_doc: Any, channel: str) -> str:
 	Side effects:
 		None.
 	"""
+	if isinstance(broadcast_doc, str):
+		return dynamo_key(broadcast_doc, channel)
+
 	campaign = (
 		getattr(broadcast_doc, "campaign", None)
 		or (broadcast_doc.get("campaign") if isinstance(broadcast_doc, dict) else None)
@@ -119,6 +123,9 @@ def _recipients_generator(broadcast: str, channel: str) -> Iterator[dict]:
 
 	Paginates using 'name > last' in chunks of RECIPIENT_INSERT_BATCH without OFFSET,
 	ensuring memory-bounded streaming even for large blasts.
+	Re-checks live opt-out against tabContact with the materializer's lookup helper;
+	opted-out recipients are updated to 'Unsubscribed' in one grouped UPDATE per chunk
+	and are omitted from yielding.
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -132,7 +139,11 @@ def _recipients_generator(broadcast: str, channel: str) -> Iterator[dict]:
 
 	Side effects:
 		Queries MariaDB tabBroadcast Recipient in batches.
+		May execute grouped UPDATE on tabBroadcast Recipient for opted-out contacts.
 	"""
+	from frappe.utils import now_datetime
+	from msuite_campaigns.broadcast.materializer import _get_opted_out_addresses
+
 	last_name: str | None = None
 	while True:
 		filters = [
@@ -162,8 +173,25 @@ def _recipients_generator(broadcast: str, channel: str) -> Iterator[dict]:
 		)
 		if not rows:
 			break
+
+		addresses = [r["address"] for r in rows if r.get("address")]
+		opted_out = _get_opted_out_addresses(channel, addresses)
+		if opted_out:
+			opted_out_names = [r["name"] for r in rows if r.get("address") in opted_out]
+			if opted_out_names:
+				frappe.db.sql(
+					"""
+					UPDATE `tabBroadcast Recipient`
+					SET `status` = 'Unsubscribed', `modified` = %(now)s
+					WHERE `name` IN %(names)s
+					""",
+					{"now": now_datetime(), "names": tuple(opted_out_names)},
+				)
+
 		for row in rows:
-			yield row
+			if row.get("address") not in opted_out:
+				yield row
+
 		if len(rows) < RECIPIENT_INSERT_BATCH:
 			break
 		last_name = rows[-1]["name"]

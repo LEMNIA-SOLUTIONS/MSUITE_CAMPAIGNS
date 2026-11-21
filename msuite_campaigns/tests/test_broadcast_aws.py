@@ -412,3 +412,82 @@ class TestBroadcastAws(IntegrationTestCase):
 			self.assertEqual(res2["message_id"], "sqs-msg-hub-order")
 			self.assertEqual(res2["s3_key"], "s3_k_hub")
 			self.assertEqual(res2["queued"], 1)
+
+	def test_dynamo_campaign_id_accepts_broadcast_name_string(self):
+		"""dynamo_campaign_id accepts a broadcast name string as well as a doc."""
+		from msuite_campaigns.broadcast.aws import dynamo_campaign_id
+
+		key = dynamo_campaign_id("BC-2026-STRING-NAME", "WhatsApp")
+		self.assertEqual(key, "BC-2026-STRING-NAME__WhatsApp")
+
+	def test_aws_manifest_export_rechecks_live_opt_out(self):
+		"""Live opt-out re-check: opted-out contact is omitted from manifest and marked Unsubscribed."""
+		from msuite_campaigns.broadcast.aws import export_and_enqueue_channel
+
+		b = self._make_broadcast(channel="WhatsApp", delivery_engine="AWS")
+		bulk_insert_recipients(
+			b.name,
+			"WhatsApp",
+			[
+				{"address": "+919811199901", "recipient_name": "Active User"},
+				{"address": "+919811199902", "recipient_name": "Opted Out User"},
+			],
+		)
+
+		# Create contact with unsubscribed_whatsapp = 1 for the second recipient
+		contact = frappe.get_doc(
+			{
+				"doctype": "Contact",
+				"first_name": "Opted Out",
+				"phone_nos": [{"phone": "+919811199902", "is_primary_mobile_no": 1}],
+				"phone_e164": "+919811199902",
+				"mobile_no": "+919811199902",
+				"unsubscribed_whatsapp": 1,
+			}
+		)
+		contact.insert(ignore_links=True)
+		frappe.db.set_value(
+			"Contact",
+			contact.name,
+			{"phone_e164": "+919811199902", "mobile_no": "+919811199902", "unsubscribed_whatsapp": 1},
+			update_modified=False,
+		)
+
+		try:
+			mock_adapter = {
+				"channel": "WhatsApp",
+				"manifest_header": lambda doc, row: {},
+				"manifest_row": lambda doc, row, r: {"phone": r["address"], "name": r["recipient_name"]},
+			}
+
+			uploaded_bodies = []
+
+			def capture_manifest(url, body):
+				uploaded_bodies.append(body)
+
+			with patch("msuite_campaigns.aws_pipeline.client.request_upload_url", return_value={"url": "http://put", "key": "s3_k_opt", "max_bytes": 100000}), patch(
+				"msuite_campaigns.aws_pipeline.client.upload_manifest", side_effect=capture_manifest
+			), patch("msuite_campaigns.aws_pipeline.client.trigger_campaign", return_value={"message_id": "sqs-opt"}), patch(
+				"msuite_campaigns.broadcast.aws._require_feature"
+			), patch(
+				"msuite_campaigns.broadcast.aws._get_channel_adapter", return_value=mock_adapter
+			):
+				res = export_and_enqueue_channel(b.name, "WhatsApp")
+
+			# Assert manifest only has header + Active User
+			self.assertEqual(len(uploaded_bodies), 1)
+			lines = [json.loads(l) for l in uploaded_bodies[0].strip().split("\n")]
+			self.assertEqual(len(lines), 2)  # header + 1 recipient
+			self.assertEqual(lines[1]["phone"], "+919811199901")
+
+			# Assert database status for opted out recipient is Unsubscribed
+			opted_rec = frappe.get_all(
+				"Broadcast Recipient",
+				filters={"broadcast": b.name, "address": "+919811199902"},
+				fields=["status"],
+			)
+			self.assertEqual(len(opted_rec), 1)
+			self.assertEqual(opted_rec[0].status, "Unsubscribed")
+		finally:
+			frappe.delete_doc("Contact", contact.name, force=True, ignore_permissions=True)
+

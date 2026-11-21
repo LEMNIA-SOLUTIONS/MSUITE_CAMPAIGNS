@@ -71,6 +71,7 @@ def enqueue_broadcast_channel(broadcast: str, channel: str) -> int:
 			queue=SEND_QUEUE,
 			timeout=SEND_TIMEOUT,
 			job_name=f"broadcast_chunk_{broadcast}_{channel}_{first_name}",
+			enqueue_after_commit=True,
 			broadcast=broadcast,
 			channel=channel,
 			first_name=first_name,
@@ -100,6 +101,9 @@ def run_chunk(broadcast: str, channel: str, first_name: str, last_name: str) -> 
 		Executes send_one on channel adapter, updates recipient statuses in DB.
 	"""
 	if not _is_channel_active(broadcast, channel):
+		from msuite_campaigns.broadcast.counters import request_counter_refresh
+
+		request_counter_refresh(broadcast, channel)
 		return {"sent": 0, "failed": 0, "stopped": True}
 
 	from msuite_campaigns.broadcast.adapters import get_channel_adapter
@@ -211,6 +215,9 @@ def run_chunk(broadcast: str, channel: str, first_name: str, last_name: str) -> 
 				failure_reason=err_msg,
 			)
 
+	from msuite_campaigns.broadcast.counters import request_counter_refresh
+
+	request_counter_refresh(broadcast, channel)
 	return {"sent": sent, "failed": failed, "stopped": stopped}
 
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe import _
 from frappe.utils import cint
 
 _PENDING_KEY = "_pending_counter_refreshes"
@@ -156,6 +155,7 @@ def request_counter_refresh(broadcast: str, channel: str) -> None:
 		queue="default",
 		job_id=job_id,
 		deduplicate=True,
+		enqueue_after_commit=True,
 		broadcast=broadcast,
 		channel=channel,
 	)

@@ -265,3 +265,12 @@ class TestBroadcastCounters(IntegrationTestCase):
 			self.assertTrue(kwargs.get("deduplicate"))
 			self.assertEqual(kwargs.get("broadcast"), b.name)
 			self.assertEqual(kwargs.get("channel"), "WhatsApp")
+
+	def test_request_counter_refresh_passes_enqueue_after_commit(self):
+		"""request_counter_refresh passes enqueue_after_commit=True to frappe.enqueue."""
+		b = self._make_broadcast(channel_status="In Progress")
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			request_counter_refresh(b.name, "WhatsApp")
+			mock_enqueue.assert_called_once()
+			self.assertTrue(mock_enqueue.call_args[1].get("enqueue_after_commit"))

@@ -18,6 +18,55 @@ from frappe.utils import validate_email_address
 
 from msuite_core.services.validation import phone as phone_validator
 
+MAX_LAUNCH_ERROR_LENGTH: int = 500
+
+
+def _get_aws_module() -> Any:
+	"""Dynamically import and return the broadcast.aws module if available."""
+	try:
+		import importlib
+
+		return importlib.import_module("msuite_campaigns.broadcast.aws")
+	except (ImportError, ModuleNotFoundError):
+		return None
+
+
+def _is_aws_engine(doc: Any, row: Any) -> bool:
+	"""Determine whether a channel row is configured for AWS engine delivery.
+
+	Args:
+		doc: Broadcast Document instance.
+		row: Broadcast Channel child row instance or dict.
+
+	Returns:
+		bool: True if AWS engine should be used or was already handed off, False otherwise.
+
+	Raises:
+		None.
+
+	Side effects:
+		None.
+	"""
+	if not row:
+		return False
+
+	engine = row.get("delivery_engine") if isinstance(row, dict) else getattr(row, "delivery_engine", None)
+	if engine == "Standard":
+		return False
+
+	channel = row.get("channel") if isinstance(row, dict) else getattr(row, "channel", None)
+	if doc and getattr(doc, "name", None) and channel:
+		cache_key = f"broadcast_aws_triggered:{doc.name}:{channel}"
+		if frappe.cache.get_value(cache_key):
+			return True
+
+	aws = _get_aws_module()
+	if aws and hasattr(aws, "should_use_aws"):
+		return bool(aws.should_use_aws(doc, row))
+
+	return False
+
+
 
 def preview(payload: dict[str, Any]) -> dict[str, Any]:
 	"""Compute reachable vs dropped counts per channel without writing to DB.
@@ -232,10 +281,16 @@ def launch(
 def start_channel(broadcast: str, channel: str) -> None:
 	"""Transition a Queued channel row to In Progress and dispatch sending.
 
-	Advances status from Queued to In Progress via `lifecycle.transition_channel`.
+	Advances status from Queued to In Progress via `lifecycle.transition_channel`
+	if not already In Progress (making start_channel idempotent).
 	Checks if `broadcast/aws.py` exists and `aws.should_use_aws(doc, row)` is True.
-	If so, dispatches to `aws.export_and_enqueue_channel`; otherwise, routes to
-	the Standard engine keyset worker via `enqueue.enqueue_broadcast_channel`.
+	If so, dispatches to `aws.export_and_enqueue_channel` (skipping re-export if
+	already In Progress); otherwise, routes to the Standard engine keyset worker via
+	`enqueue.enqueue_broadcast_channel`.
+
+	Wraps engine dispatch: on any exception moves the row from In Progress to Failed
+	via `lifecycle.transition_channel`, sets `launch_error` (truncated to
+	`MAX_LAUNCH_ERROR_LENGTH`) on the channel row and parent broadcast, and re-raises.
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -245,43 +300,61 @@ def start_channel(broadcast: str, channel: str) -> None:
 		None.
 
 	Raises:
-		frappe.ValidationError: If status transition is not permitted.
+		frappe.ValidationError: If status transition is not permitted or channel not found.
+		Exception: Re-raises any exception that occurs during engine dispatch.
 
 	Side effects:
-		Updates channel row and parent broadcast status to 'In Progress'.
+		Updates channel row and parent broadcast status to 'In Progress' or 'Failed'.
 		Enqueues background delivery jobs.
+		Updates `launch_error` on failures.
 	"""
-	from msuite_campaigns.broadcast.lifecycle import transition_channel
-
-	transition_channel(broadcast, channel, "In Progress")
-
 	doc = frappe.get_doc("Broadcast", broadcast)
 	row = doc.channel_row(channel)
+	if not row:
+		frappe.throw(_("Channel {0} not found on Broadcast {1}").format(channel, broadcast), frappe.ValidationError)
 
-	use_aws = False
-	aws = None
+	from msuite_campaigns.broadcast.lifecycle import transition_channel
+
+	already_in_progress = (row.status == "In Progress")
+	if not already_in_progress:
+		transition_channel(broadcast, channel, "In Progress")
+		doc = frappe.get_doc("Broadcast", broadcast)
+		row = doc.channel_row(channel)
+
+	use_aws = _is_aws_engine(doc, row)
+	if use_aws and already_in_progress:
+		return
+
 	try:
-		import importlib
+		if use_aws:
+			aws = _get_aws_module()
+			if not aws:
+				frappe.throw(_("msuite_campaigns.broadcast.aws module not found"), frappe.ValidationError)
+			try:
+				aws.export_and_enqueue_channel(broadcast, channel)
+			except TypeError:
+				aws.export_and_enqueue_channel(doc, row)
+		else:
+			from msuite_campaigns.broadcast.enqueue import enqueue_broadcast_channel
 
-		aws = importlib.import_module("msuite_campaigns.broadcast.aws")
-		if hasattr(aws, "should_use_aws") and aws.should_use_aws(doc, row):
-			use_aws = True
-	except (ImportError, ModuleNotFoundError):
-		use_aws = False
-
-	if use_aws and aws is not None:
+			enqueue_broadcast_channel(broadcast, channel)
+	except Exception as exc:
+		err_msg = str(exc)[:MAX_LAUNCH_ERROR_LENGTH]
 		try:
-			aws.export_and_enqueue_channel(broadcast, channel)
-		except TypeError:
-			aws.export_and_enqueue_channel(doc, row)
-	else:
-		from msuite_campaigns.broadcast.enqueue import enqueue_broadcast_channel
-
-		enqueue_broadcast_channel(broadcast, channel)
+			transition_channel(broadcast, channel, "Failed")
+		except Exception:
+			frappe.db.set_value("Broadcast Channel", row.name, "status", "Failed", update_modified=False)
+			frappe.db.set_value("Broadcast", broadcast, "status", "Failed", update_modified=False)
+		frappe.db.set_value("Broadcast Channel", row.name, "launch_error", err_msg, update_modified=False)
+		frappe.db.set_value("Broadcast", broadcast, "launch_error", err_msg, update_modified=False)
+		raise
 
 
 def pause(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	"""Pause running channel rows on a Broadcast.
+
+	Guards against pausing AWS-engine rows that are already In Progress, raising
+	frappe.ValidationError ('cannot pause after hand-off to AWS').
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -291,11 +364,18 @@ def pause(broadcast: str, channel: str | None = None) -> dict[str, str]:
 		dict[str, str]: Mapping of touched channels to their new status.
 
 	Raises:
-		frappe.ValidationError: If channel is invalid or transition illegal.
+		frappe.ValidationError: If channel is invalid, transition illegal, or attempting
+			to pause an AWS row that is already In Progress.
 
 	Side effects:
 		Updates channel and broadcast status to Paused in DB.
 	"""
+	doc = frappe.get_doc("Broadcast", broadcast)
+	target_rows = [r for r in (doc.channels or []) if not channel or r.channel == channel]
+	for r in target_rows:
+		if r.status == "In Progress" and _is_aws_engine(doc, r):
+			frappe.throw(_("cannot pause after hand-off to AWS"), frappe.ValidationError)
+
 	from msuite_campaigns.broadcast import lifecycle
 
 	return lifecycle.pause(broadcast, channel=channel)
@@ -304,7 +384,8 @@ def pause(broadcast: str, channel: str | None = None) -> dict[str, str]:
 def resume(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	"""Resume paused channel rows on a Broadcast.
 
-	Starts delivery via `hub.start_channel` for any rows that transitioned to Queued.
+	Restarts sending for every row that ends Queued OR In Progress after lifecycle.resume.
+	Guards against re-exporting AWS engine rows.
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -323,8 +404,12 @@ def resume(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	from msuite_campaigns.broadcast import lifecycle
 
 	res = lifecycle.resume(broadcast, channel=channel)
+	doc = frappe.get_doc("Broadcast", broadcast)
 	for ch, st in res.items():
-		if st == "Queued":
+		if st in ("Queued", "In Progress"):
+			row = doc.channel_row(ch)
+			if _is_aws_engine(doc, row):
+				continue
 			start_channel(broadcast, ch)
 	return res
 

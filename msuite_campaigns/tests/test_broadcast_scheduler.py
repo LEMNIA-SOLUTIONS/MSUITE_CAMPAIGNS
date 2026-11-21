@@ -147,3 +147,42 @@ class TestBroadcastScheduler(IntegrationTestCase):
 				# b2 should have successfully started
 				self.assertEqual(started_count, 1)
 				mock_log.assert_called()
+
+	def test_scheduler_channel_start_failure_leaves_row_failed_and_sets_launch_error(self):
+		"""Channel dispatch failure during scheduler run marks row Failed with launch_error set."""
+		now = now_datetime()
+		due_time = add_to_date(now, minutes=-5)
+		b1 = self._make_broadcast(scheduled_time=due_time)
+		b2 = self._make_broadcast(scheduled_time=due_time)
+
+		# Make b1 use AWS and have start_channel fail inside engine dispatch
+		with patch(
+			"msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel",
+			side_effect=RuntimeError("Engine dispatch fatal failure"),
+		):
+			with patch("frappe.log_error") as mock_log:
+				# start_due_channels runs both b1 and b2
+				# b1 will raise inside start_channel, get marked Failed with launch_error,
+				# scheduler catches exception, logs, and proceeds to b2 (which will also raise if enqueue fails,
+				# so let's make enqueue only fail for b1)
+				pass
+
+		def fake_enqueue(broadcast, channel):
+			if broadcast == b1.name:
+				raise RuntimeError("b1 engine failure")
+			return 1
+
+		with patch("msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel", side_effect=fake_enqueue):
+			with patch("frappe.log_error") as mock_log:
+				started = start_due_channels()
+				self.assertEqual(started, 1)  # b2 succeeded
+				mock_log.assert_called()
+
+		b1_st = frappe.db.get_value("Broadcast Channel", {"parent": b1.name, "channel": "WhatsApp"}, "status")
+		b1_err = frappe.db.get_value("Broadcast Channel", {"parent": b1.name, "channel": "WhatsApp"}, "launch_error")
+		self.assertEqual(b1_st, "Failed")
+		self.assertIn("b1 engine failure", b1_err)
+
+		b2_st = frappe.db.get_value("Broadcast Channel", {"parent": b2.name, "channel": "WhatsApp"}, "status")
+		self.assertEqual(b2_st, "In Progress")
+
