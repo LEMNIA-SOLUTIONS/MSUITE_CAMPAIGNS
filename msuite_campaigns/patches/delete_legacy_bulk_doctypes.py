@@ -1,7 +1,7 @@
 # Copyright (c) 2026, MSuite and contributors
 # For license information, please see license.txt
 
-"""Staged deletion (disabled) for legacy bulk message and recipient list doctypes (Task 15).
+"""Staged deletion for legacy bulk message and recipient list doctypes (Task 15).
 
 Order of deletion when confirmed and executed:
 1. Verifies migration completeness via migration.verify() (zero mismatches required).
@@ -21,8 +21,8 @@ Order of deletion when confirmed and executed:
    - Audience Member
    - Audience
 
-THIS PATCH IS DISABLED AND MUST NOT BE ADDED TO patches.txt.
-Deletion occurs only during future major release cutover after frontend migration.
+This module is the guarded implementation. It is registered through
+``remove_legacy_bulk_doctypes`` (see patches.txt), which passes confirm_delete=1.
 """
 
 from __future__ import annotations
