@@ -28,6 +28,11 @@ from typing import Any
 import frappe
 from frappe.utils import add_days, getdate, today
 
+from msuite_campaigns.broadcast.constants import (
+	BROADCAST_CHANNEL_DOCTYPE,
+	BROADCAST_DOCTYPE,
+	BULK_WHATSAPP_MESSAGE_DOCTYPE,
+)
 from msuite_campaigns.campaign.services import attribution
 from msuite_campaigns.campaign.services.events import CampaignEvent, emit
 from msuite_campaigns.campaign.services.relationships import get_adapters
@@ -1069,11 +1074,11 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 				(campaign,),
 			)
 		else:
-			broadcast_names = frappe.get_all("Broadcast", filters={"campaign": campaign}, pluck="name")
+			broadcast_names = frappe.get_all(BROADCAST_DOCTYPE, filters={"campaign": campaign}, pluck="name")
 
 	whatsapp_blasts = []
-	if frappe.db.exists("DocType", "Bulk WhatsApp Message"):
-		whatsapp_blasts = frappe.get_all("Bulk WhatsApp Message", filters={"campaign": campaign}, pluck="name")
+	if frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
+		whatsapp_blasts = frappe.get_all(BULK_WHATSAPP_MESSAGE_DOCTYPE, filters={"campaign": campaign}, pluck="name")
 
 	# Compute repointed_bcs once before daily sync loop
 	repointed_bcs = set()
@@ -1283,7 +1288,7 @@ def _sync_campaign_day(
 
 	migrated_legacy = set()
 	for blast in (whatsapp_blasts or []):
-		resolved = resolve("Bulk WhatsApp Message", blast)
+		resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
 		if resolved:
 			migrated_legacy.add(blast)
 			if resolved not in broadcast_names:
@@ -1293,8 +1298,8 @@ def _sync_campaign_day(
 
 	if broadcast_names or unmigrated_blasts:
 		broadcast_recipients = 0
-		if broadcast_names and frappe.db.table_exists("Broadcast"):
-			if frappe.db.table_exists("Broadcast Channel"):
+		if broadcast_names and frappe.db.table_exists(BROADCAST_DOCTYPE):
+			if frappe.db.table_exists(BROADCAST_CHANNEL_DOCTYPE):
 				broadcast_recipients = (
 					frappe.db.sql(
 						"""
@@ -1326,7 +1331,7 @@ def _sync_campaign_day(
 				)
 
 		legacy_recipients = 0
-		if unmigrated_blasts and frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.table_exists("Bulk WhatsApp Message"):
+		if unmigrated_blasts and frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
 			legacy_recipients = (
 				frappe.db.sql(
 					"""
@@ -1345,7 +1350,7 @@ def _sync_campaign_day(
 		conditions = []
 		params: dict = {"date": date_str}
 		if broadcast_names:
-			conditions.append("(reference_doctype = 'Broadcast' AND reference_name IN %(broadcasts)s)")
+			conditions.append(f"(reference_doctype = '{BROADCAST_DOCTYPE}' AND reference_name IN %(broadcasts)s)")
 			params["broadcasts"] = tuple(broadcast_names)
 
 		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
@@ -1367,12 +1372,12 @@ def _sync_campaign_day(
 
 		legacy_cm_blasts = list(unmigrated_blasts)
 		for blast in migrated_legacy:
-			resolved = resolve("Bulk WhatsApp Message", blast)
+			resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
 			if resolved and resolved not in repointed_bcs:
 				legacy_cm_blasts.append(blast)
 
 		if legacy_cm_blasts:
-			conditions.append("(reference_doctype = 'Bulk WhatsApp Message' AND reference_name IN %(blasts)s)")
+			conditions.append(f"(reference_doctype = '{BULK_WHATSAPP_MESSAGE_DOCTYPE}' AND reference_name IN %(blasts)s)")
 			params["blasts"] = tuple(legacy_cm_blasts)
 
 		if conditions and frappe.db.table_exists("Channel Message"):
@@ -1386,7 +1391,7 @@ def _sync_campaign_day(
 					SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
 					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
 				FROM `tabChannel Message`
-				WHERE reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')
+				WHERE reference_doctype IN ('{BROADCAST_DOCTYPE}', '{BULK_WHATSAPP_MESSAGE_DOCTYPE}')
 				  AND channel_type = %(channel_type)s
 				  AND ({where_clause})
 				  AND DATE(creation) = %(date)s
@@ -1623,7 +1628,7 @@ def _sync_campaign_lifetime(
 
 	migrated_legacy = set()
 	for blast in (whatsapp_blasts or []):
-		resolved = resolve("Bulk WhatsApp Message", blast)
+		resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
 		if resolved:
 			migrated_legacy.add(blast)
 			if resolved not in broadcast_names:
@@ -1633,8 +1638,8 @@ def _sync_campaign_lifetime(
 
 	if broadcast_names or unmigrated_blasts:
 		broadcast_recipients = 0
-		if broadcast_names and frappe.db.table_exists("Broadcast"):
-			if frappe.db.table_exists("Broadcast Channel"):
+		if broadcast_names and frappe.db.table_exists(BROADCAST_DOCTYPE):
+			if frappe.db.table_exists(BROADCAST_CHANNEL_DOCTYPE):
 				broadcast_recipients = (
 					frappe.db.sql(
 						"""
@@ -1664,7 +1669,7 @@ def _sync_campaign_lifetime(
 				)
 
 		legacy_recipients = 0
-		if unmigrated_blasts and frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.table_exists("Bulk WhatsApp Message"):
+		if unmigrated_blasts and frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
 			legacy_recipients = (
 				frappe.db.sql(
 					"""
@@ -1682,7 +1687,7 @@ def _sync_campaign_lifetime(
 		conditions = []
 		params: dict = {}
 		if broadcast_names:
-			conditions.append("(reference_doctype = 'Broadcast' AND reference_name IN %(broadcasts)s)")
+			conditions.append(f"(reference_doctype = '{BROADCAST_DOCTYPE}' AND reference_name IN %(broadcasts)s)")
 			params["broadcasts"] = tuple(broadcast_names)
 
 		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
@@ -1704,12 +1709,12 @@ def _sync_campaign_lifetime(
 
 		legacy_cm_blasts = list(unmigrated_blasts)
 		for blast in migrated_legacy:
-			resolved = resolve("Bulk WhatsApp Message", blast)
+			resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
 			if resolved and resolved not in repointed_bcs:
 				legacy_cm_blasts.append(blast)
 
 		if legacy_cm_blasts:
-			conditions.append("(reference_doctype = 'Bulk WhatsApp Message' AND reference_name IN %(blasts)s)")
+			conditions.append(f"(reference_doctype = '{BULK_WHATSAPP_MESSAGE_DOCTYPE}' AND reference_name IN %(blasts)s)")
 			params["blasts"] = tuple(legacy_cm_blasts)
 
 		if conditions and frappe.db.table_exists("Channel Message"):
@@ -1723,7 +1728,7 @@ def _sync_campaign_lifetime(
 					SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
 					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
 				FROM `tabChannel Message`
-				WHERE reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')
+				WHERE reference_doctype IN ('{BROADCAST_DOCTYPE}', '{BULK_WHATSAPP_MESSAGE_DOCTYPE}')
 				  AND channel_type = %(channel_type)s
 				  AND ({where_clause})
 				""",

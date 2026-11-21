@@ -106,11 +106,21 @@ STATUS_PARTIALLY_FAILED: str = "Partially Failed"
 STATUS_FAILED: str = "Failed"
 STATUS_CANCELLED: str = "Cancelled"
 
+# DocType constants
+BROADCAST_DOCTYPE: str = "Broadcast"
+BROADCAST_CHANNEL_DOCTYPE: str = "Broadcast Channel"
+RECIPIENT_LIST_DOCTYPE: str = "Recipient List"
+BULK_WHATSAPP_MESSAGE_DOCTYPE: str = "Bulk WhatsApp Message"
+BULK_EMAIL_MESSAGE_DOCTYPE: str = "Bulk Email Message"
+BULK_SMS_MESSAGE_DOCTYPE: str = "Bulk SMS Message"
+AUDIENCE_DOCTYPE: str = "Audience"
+AUDIENCE_MEMBER_DOCTYPE: str = "Audience Member"
+
 # Task 14: Data migration constants
 MIGRATION_BATCH: int = 200
 MIGRATION_VERIFY_CHUNK: int = 1000
-LEGACY_LIST_DOCTYPES: tuple[str, ...] = ("Audience", "WhatsApp Recipient List", "Email Recipient List")
-LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = ("Bulk WhatsApp Message", "Bulk Email Message", "Bulk SMS Message")
+LEGACY_LIST_DOCTYPES: tuple[str, ...] = (AUDIENCE_DOCTYPE, "WhatsApp Recipient List", "Email Recipient List")
+LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = (BULK_WHATSAPP_MESSAGE_DOCTYPE, BULK_EMAIL_MESSAGE_DOCTYPE, BULK_SMS_MESSAGE_DOCTYPE)
 
 # Whitelists for save_broadcast to prevent mass-assignment vulnerabilities
 WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
