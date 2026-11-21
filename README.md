@@ -28,8 +28,8 @@ The Campaign module provides multi-channel marketing campaign orchestration and 
   - CSV midnight timestamps (`YYYY-MM-DD 00:00:00`) are normalized to date-only strings (`YYYY-MM-DD`).
 
 - **Unified Broadcast & Legacy Coexistence**:
-  - `campaign_bridge` (`broadcast/campaign_bridge.py`): Shared bridge helper for channel adapters (WhatsApp, Email, SMS) providing `has_broadcast_rows` (R16 legacy fallback check), `rows_for`, `preview_rows`, `run`, `pause`, `resume`, and `stop` backed by `broadcast.hub` lifecycle operations.
-  - `list_channels(campaign)` (`campaign/api/v1/composer.py`): WhatsApp channel children read from `Broadcast` rows with WhatsApp channel, normalize `is_paused = (channel status == "Paused")`, respect caller permissions and channel roles, and deduplicate against migrated `Bulk WhatsApp Message` records via `broadcast.legacy.resolve`.
+  - `campaign_bridge` (`broadcast/campaign_bridge.py`): Shared bridge helper for channel adapters (WhatsApp, Email, SMS) providing `has_broadcast_rows` and `unmigrated(legacy_doctype, names)` (R16' legacy coexistence filtering), `rows_for`, `preview_rows` (gating on recipients > 0), `run` (checking Broadcast write permission and channel roles, skipping when 0 queued), `pause`, `resume`, and `stop` backed by `broadcast.hub` lifecycle operations with write permission checks.
+  - `list_channels(campaign)` (`campaign/api/v1/composer.py`): WhatsApp channel children read from `Broadcast` rows with WhatsApp channel, normalize `is_paused = (channel status == "Paused")` and status directly from child channel rows across both candidate and resolved legacy broadcasts, respect caller permissions and channel roles, and deduplicate against migrated `Bulk WhatsApp Message` records via `broadcast.legacy.resolve`.
   - Campaign rollups in `analytics.py` (`sync_marketing_campaign_insights`, `_sync_campaign_day`, `_sync_campaign_lifetime`): aggregate `Channel Message` rows where `reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')` and sum recipient counts without double-counting migrated blasts.
 
 #### Campaign Validation & Activity (UAT fixes)

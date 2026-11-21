@@ -336,12 +336,13 @@ def list_channels(campaign: str = "") -> dict:
 							)
 							if bc_doc:
 								rec_count = (ch_row.get("recipient_count") if ch_row else None) or bc_doc.get("total_recipients") or 0
-								is_paused = 1 if (bc_doc.get("status") == "Paused" or (ch_row and ch_row.get("status") == "Paused")) else 0
+								ch_status = (ch_row.get("status") if ch_row else None) or "Draft"
+								is_paused = 1 if ch_status == "Paused" else 0
 								whatsapp.append(
 									{
 										"name": resolved_bc,
 										"title": bc_doc.get("title") or "",
-										"status": bc_doc.get("status") or (ch_row and ch_row.get("status")) or "Draft",
+										"status": ch_status,
 										"scheduled_at": _iso(bc_doc.get("scheduled_time")),
 										"recipients_count": rec_count,
 										"recipient_count": rec_count,

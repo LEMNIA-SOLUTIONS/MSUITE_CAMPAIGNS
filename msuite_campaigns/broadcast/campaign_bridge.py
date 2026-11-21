@@ -84,6 +84,30 @@ def has_broadcast_rows(campaign: str, channel: str) -> bool:
 	)
 
 
+def unmigrated(legacy_doctype: str, names: list[str]) -> list[str]:
+	"""Filter legacy document names to only those that do NOT resolve to a Broadcast (R16').
+
+	Legacy rows that resolve to an existing Broadcast are suppressed to prevent
+	duplicate actions and sends.
+
+	Args:
+		legacy_doctype: DocType name (e.g. 'Bulk WhatsApp Message',
+			'Bulk Email Message', 'Bulk SMS Message').
+		names: List of legacy document names.
+
+	Returns:
+		list[str]: Subset of `names` that do not resolve to a Broadcast.
+	"""
+	if not legacy_doctype or not names:
+		return []
+	if not frappe.db.table_exists("Broadcast"):
+		return list(names)
+	from msuite_campaigns.broadcast.legacy import resolve
+
+	return [name for name in names if not resolve(legacy_doctype, name)]
+
+
+
 def rows_for(campaign: str, channel: str) -> list[dict[str, Any]]:
 	"""Return Broadcasts linked to campaign that have a row for channel.
 
@@ -201,14 +225,18 @@ def preview_rows(campaign: str, channel: str) -> list[dict[str, Any]]:
 		docstatus = r.get("docstatus", 0)
 
 		if st in READY_STATUSES and docstatus != 2:
-			ready = True
-			reason = ""
+			if not (r.get("recipients", 0) or 0):
+				ready = False
+				reason = _("No recipients")
+			else:
+				ready = True
+				reason = ""
 		else:
 			ready = False
 			if st == STATUS_CANCELLED or docstatus == 2:
 				reason = _("Broadcast was cancelled")
 			else:
-				reason = f"Already {st}"
+				reason = _("Already {0}").format(st)
 
 		out.append({
 			"name": r["name"],
@@ -237,7 +265,7 @@ def run(name: str, channel: str) -> dict[str, Any]:
 
 	Raises:
 		frappe.ValidationError: If channel is invalid.
-		frappe.PermissionError: If caller lacks the channel role.
+		frappe.PermissionError: If caller lacks the channel role or write permission.
 	"""
 	if channel not in CHANNELS:
 		frappe.throw(_("Invalid channel: {0}").format(channel), frappe.ValidationError)
@@ -248,6 +276,9 @@ def run(name: str, channel: str) -> dict[str, Any]:
 			_("User lacks permission for channel {0}").format(channel),
 			frappe.PermissionError,
 		)
+
+	if not frappe.has_permission("Broadcast", "write", doc=name):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 	launch_results = hub.launch(broadcast=name, channels=[channel])
 	if isinstance(launch_results, dict) and "outcome" in launch_results:
@@ -263,10 +294,16 @@ def run(name: str, channel: str) -> dict[str, Any]:
 			"message": str(ch_res["error"]),
 		}
 
-	queued = ch_res.get("queued", 0)
+	queued = ch_res.get("queued", 0) or 0
+	if queued == 0:
+		return {
+			"outcome": OUTCOME_SKIPPED,
+			"reason": _("No recipients queued"),
+		}
+
 	return {
 		"outcome": OUTCOME_FIRED,
-		"message": f"Queued {queued} recipient(s)",
+		"message": _("Queued {0} recipient(s)").format(queued),
 	}
 
 
@@ -290,8 +327,12 @@ def pause(campaign: str, channel: str) -> list[dict[str, Any]]:
 		st = r.get("status")
 		base = {"name": r["name"], "status": st}
 
+		if not frappe.has_permission("Broadcast", "write", doc=r["name"]):
+			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": _("Not permitted")})
+			continue
+
 		if st not in PAUSEABLE_STATUSES:
-			reason = _("Already paused.") if st == STATUS_PAUSED else f"Status is {st} — pause has no effect."
+			reason = _("Already paused.") if st == STATUS_PAUSED else _("Status is {0} — pause has no effect.").format(st)
 			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": reason})
 			continue
 
@@ -325,8 +366,12 @@ def resume(campaign: str, channel: str) -> list[dict[str, Any]]:
 		st = r.get("status")
 		base = {"name": r["name"], "status": st}
 
+		if not frappe.has_permission("Broadcast", "write", doc=r["name"]):
+			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": _("Not permitted")})
+			continue
+
 		if st not in RESUMABLE_STATUSES:
-			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": f"Status is {st} — resume has no effect."})
+			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": _("Status is {0} — resume has no effect.").format(st)})
 			continue
 
 		try:
@@ -360,8 +405,12 @@ def stop(campaign: str, channel: str) -> list[dict[str, Any]]:
 		st = r.get("status")
 		base = {"name": r["name"], "status": st}
 
+		if not frappe.has_permission("Broadcast", "write", doc=r["name"]):
+			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": _("Not permitted")})
+			continue
+
 		if st not in STOPPABLE_STATUSES:
-			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": f"Status is {st} — cannot cancel."})
+			out.append({**base, "outcome": OUTCOME_SKIPPED, "reason": _("Status is {0} — cannot cancel.").format(st)})
 			continue
 
 		try:

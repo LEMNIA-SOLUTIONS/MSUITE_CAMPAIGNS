@@ -1031,19 +1031,21 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		"""Migrated legacy blast resolves to Broadcast and is shown once as the Broadcast; unmigrated and new are both shown."""
 		campaign = self._make_campaign("Dedupe Channels Campaign")
 
-		# Legacy blast that was migrated
+		# Legacy blast that was migrated to a Broadcast (which was not directly linked to campaign)
 		legacy_migrated = self._make_bulk_whatsapp(campaign.name, "Legacy Migrated Blast")
 		migrated_bc = self._make_broadcast(
-			campaign=campaign.name,
+			campaign="",
 			title="Migrated Broadcast Title",
 			legacy_doctype="Bulk WhatsApp Message",
 			legacy_name=legacy_migrated.name,
+			status="Paused",
 			total_recipients=150,
 			channels=[
 				{
 					"channel": "WhatsApp",
 					"whatsapp_account": "WA-ACC-001",
 					"whatsapp_template": "tpl_wa_001",
+					"status": "Draft",
 					"recipient_count": 150,
 				}
 			],
@@ -1074,6 +1076,9 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		# Migrated blast is shown ONCE, as the Broadcast
 		self.assertIn(migrated_bc.name, wa_names)
 		self.assertNotIn(legacy_migrated.name, wa_names)
+		migrated_item = next(r for r in wa_items if r["name"] == migrated_bc.name)
+		self.assertEqual(migrated_item["status"], "Draft")
+		self.assertEqual(migrated_item["is_paused"], 0)
 
 		# Unmigrated blast is shown as the legacy blast
 		self.assertIn(legacy_unmigrated.name, wa_names)

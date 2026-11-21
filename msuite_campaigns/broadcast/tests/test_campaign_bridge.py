@@ -512,3 +512,137 @@ class TestCampaignBridge(IntegrationTestCase):
 		from msuite_campaigns.broadcast.campaign_bridge import stop
 
 		self.assertEqual(stop("NonExistentCampaign", CHANNEL_WHATSAPP), [])
+
+	# ------------------------------------------------------------------
+	# Fix 1 additions: unmigrated, write permission, 0-recipients
+	# ------------------------------------------------------------------
+
+	def test_unmigrated_filters_out_resolved_broadcasts(self):
+		"""unmigrated keeps unmigrated blasts and filters out blasts that resolve to a Broadcast."""
+		from msuite_campaigns.broadcast.campaign_bridge import unmigrated
+
+		legacy_name_1 = f"ZZLegacyUnmigrated-{frappe.generate_hash(length=6)}"
+		legacy_name_2 = f"ZZLegacyMigrated-{frappe.generate_hash(length=6)}"
+		bc = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="Migrated Bridge BC",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT}],
+		)
+		frappe.db.set_value("Broadcast", bc.name, {
+			"legacy_doctype": "Bulk WhatsApp Message",
+			"legacy_name": legacy_name_2,
+		})
+
+		res = unmigrated("Bulk WhatsApp Message", [legacy_name_1, legacy_name_2])
+		self.assertEqual(res, [legacy_name_1])
+		self.assertEqual(unmigrated("", [legacy_name_1]), [])
+		self.assertEqual(unmigrated("Bulk WhatsApp Message", []), [])
+
+	def test_preview_rows_zero_recipients_not_ready(self):
+		"""preview_rows marks row with 0 recipients ready=False and reason='No recipients'."""
+		from msuite_campaigns.broadcast.campaign_bridge import preview_rows
+
+		bc = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="Zero Recipient BC",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT, "recipient_count": 0}],
+		)
+
+		previews = preview_rows(self.campaign.name, CHANNEL_WHATSAPP)
+		by_name = {p["name"]: p for p in previews}
+		self.assertIn(bc.name, by_name)
+		self.assertFalse(by_name[bc.name]["ready"])
+		self.assertEqual(by_name[bc.name]["reason"], "No recipients")
+
+	@patch("msuite_campaigns.broadcast.hub.launch")
+	def test_run_zero_recipients_queued_skipped(self, mock_launch):
+		"""run returns outcome 'skipped' and reason 'No recipients queued' when queued == 0."""
+		from msuite_campaigns.broadcast.campaign_bridge import run
+
+		bc = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="Run Zero BC",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT, "recipient_count": 0}],
+		)
+		mock_launch.return_value = {
+			CHANNEL_WHATSAPP: {"status": STATUS_DRAFT, "queued": 0, "dropped": 0, "error": None}
+		}
+
+		res = run(bc.name, CHANNEL_WHATSAPP)
+		self.assertEqual(res["outcome"], "skipped")
+		self.assertEqual(res["reason"], "No recipients queued")
+
+	def test_run_permission_error_when_user_lacks_broadcast_write_permission(self):
+		"""run raises PermissionError when caller has channel role but lacks Broadcast write permission."""
+		from msuite_campaigns.broadcast.campaign_bridge import run
+
+		bc = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="Run Write Perm WA",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT}],
+		)
+
+		wa_user = self._make_user("bridge-wa-runner@example.com", ["WhatsApp User"])
+		frappe.set_user(wa_user)
+
+		def fake_run_perm(doctype, ptype="read", doc=None, user=None, *args, **kwargs):
+			if ptype == "write":
+				return False
+			return True
+
+		try:
+			with patch("frappe.has_permission", side_effect=fake_run_perm):
+				with self.assertRaises(frappe.PermissionError):
+					run(bc.name, CHANNEL_WHATSAPP)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_pause_resume_stop_skip_row_without_write_permission(self):
+		"""pause, resume, and stop skip rows where caller lacks Broadcast write permission."""
+		from msuite_campaigns.broadcast.campaign_bridge import pause, resume, stop
+
+		bc_no_perm = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="No Perm BC",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_QUEUED}],
+		)
+		bc_allowed = self._make_broadcast(
+			campaign=self.campaign.name,
+			title="Allowed BC",
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_QUEUED}],
+		)
+
+		def fake_has_perm(doctype, ptype="read", doc=None, user=None, *args, **kwargs):
+			if ptype == "write" and doc == bc_no_perm.name:
+				return False
+			return True
+
+		with patch("frappe.has_permission", side_effect=fake_has_perm):
+			with patch("msuite_campaigns.broadcast.hub.pause") as mock_pause:
+				pause_res = pause(self.campaign.name, CHANNEL_WHATSAPP)
+				by_name = {r["name"]: r for r in pause_res}
+				self.assertEqual(by_name[bc_no_perm.name]["outcome"], "skipped")
+				self.assertEqual(by_name[bc_no_perm.name]["reason"], "Not permitted")
+				self.assertEqual(by_name[bc_allowed.name]["outcome"], "fired")
+				mock_pause.assert_called_once_with(broadcast=bc_allowed.name, channel=CHANNEL_WHATSAPP)
+
+			# Switch to Paused for resume test
+			frappe.db.set_value("Broadcast Channel", {"parent": bc_no_perm.name, "channel": CHANNEL_WHATSAPP}, "status", STATUS_PAUSED)
+			frappe.db.set_value("Broadcast Channel", {"parent": bc_allowed.name, "channel": CHANNEL_WHATSAPP}, "status", STATUS_PAUSED)
+
+			with patch("msuite_campaigns.broadcast.hub.resume", return_value={CHANNEL_WHATSAPP: STATUS_QUEUED}) as mock_resume:
+				resume_res = resume(self.campaign.name, CHANNEL_WHATSAPP)
+				by_name = {r["name"]: r for r in resume_res}
+				self.assertEqual(by_name[bc_no_perm.name]["outcome"], "skipped")
+				self.assertEqual(by_name[bc_no_perm.name]["reason"], "Not permitted")
+				self.assertEqual(by_name[bc_allowed.name]["outcome"], "fired")
+				mock_resume.assert_called_once_with(broadcast=bc_allowed.name, channel=CHANNEL_WHATSAPP)
+
+			with patch("msuite_campaigns.broadcast.hub.cancel") as mock_cancel:
+				stop_res = stop(self.campaign.name, CHANNEL_WHATSAPP)
+				by_name = {r["name"]: r for r in stop_res}
+				self.assertEqual(by_name[bc_no_perm.name]["outcome"], "skipped")
+				self.assertEqual(by_name[bc_no_perm.name]["reason"], "Not permitted")
+				self.assertEqual(by_name[bc_allowed.name]["outcome"], "fired")
+				mock_cancel.assert_called_once_with(broadcast=bc_allowed.name, channel=CHANNEL_WHATSAPP)
+
