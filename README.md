@@ -156,6 +156,7 @@ Message delivery executes in seven stages:
    - For `AWS`: `aws.export_and_enqueue_channel` builds one manifest line per queued recipient with the adapter's `manifest_header` and `manifest_row`. It requests an upload URL from the provider and uploads the manifest. It then calls the adapter's `sync_secret`, asks the provider to trigger the AWS campaign (`aws_pipeline.client.trigger_campaign`), and finally calls the adapter's `record_outbound`. AWS sends do not write per-recipient status back to the database. Counters come from DynamoDB through `rollup.channel_metrics`.
 6. **Webhooks**: Gateways deliver status webhooks for sent, delivered, read, bounced, and failed events. The webhook looks up `Broadcast Recipient` by `provider_message_id`. It calls `recipients.apply_delivery_status` with monotonic status rank validation.
 7. **Counters**: Webhook and worker events call `counters.request_counter_refresh(broadcast, channel)`. This queues a debounced refresh job. The job executes one grouped SQL query to update channel counter columns. When all recipients reach terminal statuses, the job transitions the channel to `Completed`, `Partially Failed`, or `Failed`.
+8. **Completion and failure**: `enqueue.run_chunk` requests a counter refresh when it ends, so a Standard channel completes even when the gateway sends no status webhooks. If the hand-off in `hub.start_channel` raises an error, the channel moves from `In Progress` to `Failed` and `launch_error` holds the message. Background jobs start after the database commit (`enqueue_after_commit`).
 
 #### Channel Adapter Contract
 
@@ -176,7 +177,8 @@ The adapter dictionary must contain the following keys:
 #### Permissions and Plan Gates
 
 ##### Permission Rules (P1)
-- **Mutations and Launch**: Creating, editing, deleting, or launching a broadcast requires an administrator role (`System Manager`, `MSuite Admin`, `Campaign Manager`) or the specific channel role for every channel row on the broadcast (`WhatsApp User` or `WhatsApp Manager` for WhatsApp, `Email User` or `Email Manager` for Email, `SMS User` or `SMS Manager` for SMS).
+- **Create, edit and launch**: A user needs an administrator role (`System Manager`, `MSuite Admin`, `Campaign Manager`) or the channel role for every channel row on the broadcast (`WhatsApp User` or `WhatsApp Manager` for WhatsApp, `Email User` or `Email Manager` for Email, `SMS User` or `SMS Manager` for SMS). `Campaign User` counts as holding every channel for read, create, edit and launch.
+- **Delete**: A user needs an administrator role or the manager role of every channel on the broadcast (`WhatsApp Manager`, `Email Manager`, `SMS Manager`). `Campaign User` and the plain channel user roles cannot delete.
 - **Read and Inspect**: Viewing a broadcast requires an administrator role, `MSuite Viewer`, or at least one matching channel role. Users with partial roles only see channel rows and recipient logs that match their permissions. The system applies SQL filters via `permission_query_conditions`.
 
 ##### Plan Gates
@@ -191,17 +193,17 @@ The adapter dictionary must contain the following keys:
 |---|---|---|
 | `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}` |
 | `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "completed": int, "failed": int, "cancelled": int}` |
-| `get_broadcast` | `name` | `dict` (Broadcast document with child rows and metrics) |
-| `save_broadcast` | `doc, launch=0, individual_rows="[]", name=""` | `{"name": str, "status": str, "results": dict}` |
+| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics`.) |
+| `save_broadcast` | `doc, launch=0, individual_rows="[]", name=""` | `{"name": str, "status": str, "results": dict}`. Only user-editable fields are accepted. Status, counters and timestamps are set by the system. A new broadcast always starts as `Draft`. |
 | `launch_broadcast` | `name, individual_rows="[]"` | `dict[str, str]` (per-channel status) |
-| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
-| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
+| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
+| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A resumed Standard channel sends the recipients that are still `Queued`. |
 | `cancel_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
 | `retry_failed_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
 | `delete_broadcasts` | `names` (JSON list string) | `{"deleted": list[str], "failed": list[dict]}` |
 | `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress and percentages) |
 | `get_broadcast_recipients` | `name, channel="", status="", search="", start=0, length=50, export=0` | `{"rows": list[dict], "total": int, "truncated": bool}` |
-| `clone_broadcast` | `name` | `dict` (new Draft Broadcast document) |
+| `clone_broadcast` | `name` | `dict` (new Draft Broadcast document). The user needs create access to every channel on the source broadcast. |
 
 ##### `msuite_campaigns.audience.api.v1.recipient_list`
 
@@ -244,6 +246,7 @@ The broadcast scheduler initiates scheduled dispatches:
 
 The migration module ports historical data into unified models:
 - Module: `msuite_campaigns.broadcast.migration` and `msuite_campaigns.broadcast.legacy`.
+- Coexistence rule: while the legacy record of a migrated `Broadcast` still exists, campaign analytics and the campaign calendar skip that `Broadcast`. The old code still counts and shows the legacy record. The check uses `legacy_doctype` and `legacy_name` at run time. After the legacy record is deleted, the `Broadcast` counts and shows on its own.
 - In-flight rule: In-progress or paused legacy bulk messages migrate with status `Paused`. This prevents unexpected background delivery after migration.
 - `migration.run(dry_run=True, batch_size=1000)`: Migrates lists and bulk messages in transactional batches. When `dry_run=True`, it performs validation without writing changes.
 - `migration.verify() -> dict`: Compares source counts against target counts across all six legacy doctypes.
