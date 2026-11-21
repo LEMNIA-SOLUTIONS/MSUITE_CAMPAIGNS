@@ -334,7 +334,7 @@ def _load_audience(payload: dict):
 	name = payload.get("audience")
 	if not name:
 		frappe.throw(_("An audience is required."))
-	if not frappe.db.exists(AUDIENCE_DOCTYPE, name):
+	if not frappe.db.exists("DocType", AUDIENCE_DOCTYPE) or not frappe.db.exists(AUDIENCE_DOCTYPE, name):
 		frappe.throw(_("Audience {0} not found.").format(name))
 	return frappe.get_doc(AUDIENCE_DOCTYPE, name)
 
@@ -471,7 +471,7 @@ def retry_campaign(campaign: str) -> dict:
 	]
 
 	for ch_key, blast_name, doctype in linked:
-		if not blast_name or not frappe.db.exists(doctype, blast_name):
+		if not blast_name or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, blast_name):
 			continue
 		try:
 			doc = frappe.get_doc(doctype, blast_name)

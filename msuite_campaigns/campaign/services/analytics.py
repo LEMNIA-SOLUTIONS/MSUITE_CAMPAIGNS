@@ -1326,7 +1326,7 @@ def _sync_campaign_day(
 				)
 
 		legacy_recipients = 0
-		if unmigrated_blasts and frappe.db.table_exists("Bulk WhatsApp Message"):
+		if unmigrated_blasts and frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.table_exists("Bulk WhatsApp Message"):
 			legacy_recipients = (
 				frappe.db.sql(
 					"""
@@ -1664,7 +1664,7 @@ def _sync_campaign_lifetime(
 				)
 
 		legacy_recipients = 0
-		if unmigrated_blasts and frappe.db.table_exists("Bulk WhatsApp Message"):
+		if unmigrated_blasts and frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.table_exists("Bulk WhatsApp Message"):
 			legacy_recipients = (
 				frappe.db.sql(
 					"""

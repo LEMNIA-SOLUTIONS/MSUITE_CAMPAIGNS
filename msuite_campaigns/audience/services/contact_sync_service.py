@@ -282,15 +282,16 @@ def _sync_audience_member_consent(channel: str, e164: str, raw_id: str, unsubscr
 	"""
 	if channel in ("WhatsApp", "SMS"):
 		col = "unsubscribed_whatsapp" if channel == "WhatsApp" else "unsubscribed_sms"
-		frappe.db.sql(
-			f"""
-			UPDATE `tabAudience Member`
-			SET {col} = %(val)s
-			WHERE (phone_e164 IS NOT NULL AND phone_e164 != '' AND phone_e164 = %(e164)s)
-			   OR (raw_phone IS NOT NULL AND raw_phone != '' AND raw_phone = %(raw)s)
-			""",
-			{"val": unsubscribed, "e164": e164, "raw": raw_id},
-		)
+		if frappe.db.table_exists("Audience Member"):
+			frappe.db.sql(
+				f"""
+				UPDATE `tabAudience Member`
+				SET {col} = %(val)s
+				WHERE (phone_e164 IS NOT NULL AND phone_e164 != '' AND phone_e164 = %(e164)s)
+				   OR (raw_phone IS NOT NULL AND raw_phone != '' AND raw_phone = %(raw)s)
+				""",
+				{"val": unsubscribed, "e164": e164, "raw": raw_id},
+			)
 		frappe.db.sql(
 			f"""
 			UPDATE `tabRecipient Contact`
@@ -302,15 +303,16 @@ def _sync_audience_member_consent(channel: str, e164: str, raw_id: str, unsubscr
 		)
 	elif channel == "Email":
 		norm = (raw_id or "").strip().lower()
-		frappe.db.sql(
-			"""
-			UPDATE `tabAudience Member`
-			SET unsubscribed_email = %(val)s
-			WHERE (email_normalized IS NOT NULL AND email_normalized != '' AND email_normalized = %(norm)s)
-			   OR (raw_email IS NOT NULL AND raw_email != '' AND raw_email = %(raw)s)
-			""",
-			{"val": unsubscribed, "norm": norm, "raw": raw_id},
-		)
+		if frappe.db.table_exists("Audience Member"):
+			frappe.db.sql(
+				"""
+				UPDATE `tabAudience Member`
+				SET unsubscribed_email = %(val)s
+				WHERE (email_normalized IS NOT NULL AND email_normalized != '' AND email_normalized = %(norm)s)
+				   OR (raw_email IS NOT NULL AND raw_email != '' AND raw_email = %(raw)s)
+				""",
+				{"val": unsubscribed, "norm": norm, "raw": raw_id},
+			)
 		frappe.db.sql(
 			"""
 			UPDATE `tabRecipient Contact`

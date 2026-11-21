@@ -74,7 +74,7 @@ def get_calendar_events(
 	valid_types = [
 		t for t in requested_types
 		if t in _ALL_TYPES and (
-			frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read")
+			(frappe.db.exists("DocType", _SOURCE_DATE_FIELDS[t][0]) and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read"))
 			or (t == "WhatsApp Message" and frappe.db.exists("DocType", "Broadcast") and frappe.has_permission("Broadcast", "read"))
 		)
 	]
@@ -269,10 +269,26 @@ def reschedule_event(
 	else:
 		doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
 
-	if doctype == "Bulk WhatsApp Message" and not frappe.db.exists("Bulk WhatsApp Message", source_name) and frappe.db.exists("Broadcast", source_name):
-		doctype = "Broadcast"
-		start_field = "scheduled_time"
-		end_field = "scheduled_time"
+	if doctype == "Bulk WhatsApp Message":
+		from msuite_campaigns.broadcast.legacy import resolve
+
+		resolved = resolve("Bulk WhatsApp Message", source_name)
+		if resolved and frappe.db.exists("Broadcast", resolved):
+			doctype = "Broadcast"
+			source_name = resolved
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
+		elif not frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+			if frappe.db.exists("Broadcast", source_name):
+				doctype = "Broadcast"
+				start_field = "scheduled_time"
+				end_field = "scheduled_time"
+			else:
+				frappe.throw(_("Bulk WhatsApp Message {0} not found").format(source_name), frappe.DoesNotExistError)
+		elif not frappe.db.exists("Bulk WhatsApp Message", source_name) and frappe.db.exists("Broadcast", source_name):
+			doctype = "Broadcast"
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
 
 	if doctype == "CRM Task":
 		task = frappe.get_doc("CRM Task", source_name)

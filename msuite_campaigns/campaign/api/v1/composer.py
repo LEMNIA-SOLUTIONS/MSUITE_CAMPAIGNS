@@ -600,6 +600,8 @@ def link_whatsapp_blast(campaign: str, blast: str) -> dict:
 		frappe.throw(
 			_("No write permission for Marketing Campaign {0}").format(campaign), frappe.PermissionError
 		)
+	if not frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+		frappe.throw(_("DocType Bulk WhatsApp Message not found"), frappe.DoesNotExistError)
 	if not frappe.has_permission("Bulk WhatsApp Message", "write", doc=blast):
 		frappe.throw(
 			_("No write permission for Bulk WhatsApp Message {0}").format(blast), frappe.PermissionError
@@ -614,6 +616,8 @@ def link_whatsapp_blast(campaign: str, blast: str) -> dict:
 def unlink_whatsapp_blast(blast: str) -> dict:
 	"""Detach a Bulk WhatsApp Message from whichever Campaign it's
 	currently linked to."""
+	if not frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+		frappe.throw(_("DocType Bulk WhatsApp Message not found"), frappe.DoesNotExistError)
 	if not frappe.has_permission("Bulk WhatsApp Message", "write", doc=blast):
 		frappe.throw(
 			_("No write permission for Bulk WhatsApp Message {0}").format(blast), frappe.PermissionError

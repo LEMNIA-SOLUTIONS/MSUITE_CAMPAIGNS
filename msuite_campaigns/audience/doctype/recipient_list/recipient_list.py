@@ -17,7 +17,16 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
-from msuite_campaigns.audience.doctype.audience.audience import existing_reason_from_verdict
+try:
+	from msuite_campaigns.audience.doctype.audience.audience import existing_reason_from_verdict
+except (ImportError, ModuleNotFoundError):
+	def existing_reason_from_verdict(verdict: dict) -> str:
+		matched = []
+		if verdict.get("phone_e164") and verdict.get("phone_existing"):
+			matched.append("phone")
+		if verdict.get("email_normalized") and verdict.get("email_existing"):
+			matched.append("email")
+		return "+".join(matched)
 from msuite_campaigns.audience.plan_gates import check_recipient_list_size_gate
 from msuite_campaigns.audience.services.contact_sync_service import sync_recipient_list_to_contacts
 from msuite_campaigns.broadcast.constants import CHANNELS

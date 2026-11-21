@@ -125,7 +125,7 @@ def check_audience_size_gate(doc, method: str = "") -> None:
 
 		# Over cap: check if existing rows were already over the cap and no new rows were added.
 		is_new = bool(getattr(doc, "is_new", None) and doc.is_new())
-		if not is_new and getattr(doc, "name", None) and frappe.db.exists("Audience", doc.name):
+		if not is_new and getattr(doc, "name", None) and frappe.db.exists("DocType", "Audience") and frappe.db.exists("Audience", doc.name):
 			previous_count = frappe.db.count("Audience Member", {"parent": doc.name})
 			if current_count <= previous_count:
 				return

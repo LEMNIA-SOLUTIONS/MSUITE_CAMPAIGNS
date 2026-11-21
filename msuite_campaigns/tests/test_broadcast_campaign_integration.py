@@ -83,10 +83,10 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 			frappe.db.delete("Broadcast Product", {"parent": ["in", self.cleanup_broadcasts]})
 			frappe.db.delete("Broadcast Recipient", {"broadcast": ["in", self.cleanup_broadcasts]})
 		for name in self.cleanup_blasts:
-			if frappe.db.exists("Bulk WhatsApp Message", name):
+			if frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.exists("Bulk WhatsApp Message", name):
 				frappe.delete_doc("Bulk WhatsApp Message", name, force=True, ignore_permissions=True)
 		for name in self.cleanup_email_blasts:
-			if frappe.db.exists("Bulk Email Message", name):
+			if frappe.db.exists("DocType", "Bulk Email Message") and frappe.db.exists("Bulk Email Message", name):
 				frappe.delete_doc("Bulk Email Message", name, force=True, ignore_permissions=True)
 		for name in self.cleanup_campaigns:
 			if frappe.db.exists("Marketing Campaign", name):
@@ -217,6 +217,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.cleanup_messages.append(cm.name)
 		return cm
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_counts_include_both_kinds(self):
 		"""Counts in composer._get_relationship_counts include both old blasts and Broadcasts."""
 		campaign = self._make_campaign("Count Test Campaign")
@@ -387,6 +388,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertIn("Beta Summer Promo", titles)
 		self.assertNotIn("Gamma Winter Sale", titles)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_analytics_sums_old_plus_new_without_double_counting(self):
 		"""C-01 / I-05a: Analytics excludes migrated Broadcast while old doc exists, counts after deletion."""
 		campaign = self._make_campaign("Analytics Coexistence Campaign")
@@ -473,7 +475,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		"""Analytics survives if broadcast rollup cannot be imported."""
 		campaign = self._make_campaign("Analytics Missing Rollup Campaign")
 
-		with patch.dict("sys.modules", {"msuite_campaigns.broadcast.rollup": None}):
+		with patch("msuite_campaigns.broadcast.rollup.campaign_metrics", side_effect=ImportError("module missing")):
 			# Should not raise exception
 			dashboard = get_campaign_dashboard(campaign.name)
 			self.assertIsInstance(dashboard, dict)
@@ -634,6 +636,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		)
 		self.assertIsNone(ev_name)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_calendar_coexistence_migrated_broadcast_suppressed(self):
 		"""C-02: Migrated Broadcast with existing legacy doc projects NO event; new projects one; reschedule works."""
 		campaign = self._make_campaign("Calendar Coexistence Campaign")
@@ -729,6 +732,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		ev_row = frappe.get_doc("Campaign Calendar Event", event_after_del)
 		self.assertEqual(ev_row.source_name, migrated_bc.name)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_duplicate_campaign_coexistence_and_individual_recipients(self):
 		"""I-01: duplicate_campaign skips migrated broadcast whose legacy blast is duplicated, and clones Individual recipients."""
 		campaign = self._make_campaign("Duplicate Coexistence Campaign")
@@ -910,6 +914,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertEqual(metrics["WhatsApp"]["metrics"]["sent"], 120)
 		self.assertEqual(metrics["WhatsApp"]["blasts"], 12)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_duplicate_campaign_preserves_migrated_email_and_sms_broadcasts(self):
 		"""F7 / NEW-I-01: duplicate_campaign skips only migrated WhatsApp broadcasts whose legacy blast is duplicated.
 
@@ -1027,6 +1032,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertEqual(item["is_paused"], 0)
 		self.assertTrue(item["scheduled_at"])
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_list_channels_coexistence_and_deduplication(self):
 		"""Migrated legacy blast resolves to Broadcast and is shown once as the Broadcast; unmigrated and new are both shown."""
 		campaign = self._make_campaign("Dedupe Channels Campaign")
@@ -1159,6 +1165,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertGreaterEqual(insight["total_reach"], 2)
 		self.assertGreaterEqual(insight["total_engagement"], 1)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_analytics_sync_no_double_counting_migrated_blast(self):
 		"""sync_marketing_campaign_insights excludes migrated Bulk WhatsApp Message to avoid double counting."""
 		campaign = self._make_campaign("Analytics Dedupe Campaign")
@@ -1234,6 +1241,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		self.assertIsNotNone(insight)
 		self.assertEqual(insight["whatsapp_delivered"], 1)
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_list_channels_legacy_blast_not_exposed_to_email_only_user(self):
 		"""Email-only user cannot see legacy Bulk WhatsApp Message rows in list_channels."""
 		campaign = self._make_campaign("Legacy Perm Isolated Campaign")
@@ -1262,6 +1270,7 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		finally:
 			frappe.set_user("Administrator")
 
+	@unittest.skipUnless(frappe.db.exists("DocType", "Bulk WhatsApp Message"), "legacy doctype deleted")
 	def test_list_channels_migrated_blast_unreadable_broadcast_skipped(self):
 		"""If a legacy blast resolves to a Broadcast the user cannot read, skip it, do not fall through to legacy row."""
 		campaign = self._make_campaign("Unreadable Migrated Campaign")
@@ -1294,4 +1303,15 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 					self.assertNotIn(old_blast.name, wa_names)
 				finally:
 					frappe.set_user("Administrator")
+
+	def test_broadcast_campaign_integration_tolerates_deleted_legacy_doctypes(self):
+		"""Regression: Campaign and Calendar operations tolerate deleted legacy doctypes."""
+		campaign = self._make_campaign("Tolerate Deleted DocTypes Campaign")
+		self._make_broadcast(campaign=campaign.name, title="New Broadcast")
+		channels = list_channels(campaign.name)
+		self.assertIsInstance(channels, dict)
+		events = get_calendar_events(from_date="2026-01-01", to_date="2026-12-31")
+		self.assertIsInstance(events, list)
+		counts = composer._get_relationship_counts(campaign.name)
+		self.assertIn("broadcasts", counts)
 

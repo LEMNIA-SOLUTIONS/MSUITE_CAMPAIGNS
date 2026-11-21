@@ -31,6 +31,8 @@ def _loads(raw, default):
 
 @frappe.whitelist()
 def list_audiences(search: str = "", limit: int = 100) -> list:
+	if not frappe.db.exists("DocType", DOCTYPE):
+		return []
 	filters = {}
 	if search:
 		filters["audience_name"] = ["like", f"%{search}%"]
@@ -55,12 +57,16 @@ def list_audiences(search: str = "", limit: int = 100) -> list:
 
 @frappe.whitelist()
 def get_audience(name: str) -> dict:
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(name), frappe.DoesNotExistError)
 	return frappe.get_doc(DOCTYPE, name, check_permission=True).as_dict()
 
 
 @frappe.whitelist()
 def save_audience(doc: str) -> dict:
 	# perm: Document.save() enforces create and write permissions
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("DocType Audience not found"), frappe.DoesNotExistError)
 	data = _loads(doc, {})
 	valid_sources = {"Manual", "CSV Upload", "DocType Import", "Segment"}
 	source = data.get("source")
@@ -107,6 +113,8 @@ def save_audience(doc: str) -> dict:
 @frappe.whitelist()
 def delete_audience(name: str) -> dict:
 	# perm: frappe.delete_doc enforces delete permissions
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(name), frappe.DoesNotExistError)
 	frappe.delete_doc(DOCTYPE, name)
 	return {"ok": True}
 
@@ -115,6 +123,8 @@ def delete_audience(name: str) -> dict:
 def bulk_delete_audiences(names: str) -> dict:
 	"""Batch delete audiences by list of names."""
 	# perm: frappe.delete_doc enforces delete permissions
+	if not frappe.db.exists("DocType", DOCTYPE):
+		return {"deleted": 0, "total": 0}
 	name_list = _loads(names, [])
 	if not isinstance(name_list, list):
 		name_list = [names]
