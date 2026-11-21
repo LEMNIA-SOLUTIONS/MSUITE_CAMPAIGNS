@@ -1315,3 +1315,25 @@ class TestBroadcastCampaignIntegration(IntegrationTestCase):
 		counts = composer._get_relationship_counts(campaign.name)
 		self.assertIn("broadcasts", counts)
 
+	def test_audience_endpoints_tolerate_deleted_legacy_doctypes(self):
+		"""Regression: audience and broadcast detail endpoints raise DoesNotExistError when legacy doctypes are deleted."""
+		from msuite_campaigns.audience.api.v1 import audience
+
+		# get_broadcast_detail with legacy prefixes raises clean DoesNotExistError
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.get_broadcast_detail("BULK-WA-2026-00001")
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.get_broadcast_detail("BULK-EM-2026-00001")
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.get_broadcast_detail("BULK-SM-2026-00001")
+
+		# get_members, update_member, delete_member, get_validation_summary raise clean DoesNotExistError
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.get_members("AUD-NONEXISTENT")
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.update_member("AM-NONEXISTENT")
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.delete_member("AM-NONEXISTENT")
+		with self.assertRaises(frappe.DoesNotExistError):
+			audience.get_validation_summary("AUD-NONEXISTENT")
+

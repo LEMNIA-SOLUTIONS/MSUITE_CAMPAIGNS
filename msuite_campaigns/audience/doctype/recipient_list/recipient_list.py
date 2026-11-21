@@ -21,6 +21,14 @@ try:
 	from msuite_campaigns.audience.doctype.audience.audience import existing_reason_from_verdict
 except (ImportError, ModuleNotFoundError):
 	def existing_reason_from_verdict(verdict: dict) -> str:
+		"""Format why a recipient was flagged as existing from validation verdict.
+
+		Args:
+			verdict: Dictionary containing contact validation verdict flags.
+
+		Returns:
+			str: Formatted string indicating which identifier matched ("phone", "email", or "phone+email").
+		"""
 		matched = []
 		if verdict.get("phone_e164") and verdict.get("phone_existing"):
 			matched.append("phone")

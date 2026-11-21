@@ -153,17 +153,17 @@ def _broadcast_doctype(name: str) -> str | None:
 		return None
 	if frappe.db.exists("Marketing Campaign", name):
 		return "Marketing Campaign"
-	if frappe.db.exists("Bulk WhatsApp Message", name):
+	if frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.exists("Bulk WhatsApp Message", name):
 		return "Bulk WhatsApp Message"
-	if frappe.db.exists("Bulk Email Message", name):
+	if frappe.db.exists("DocType", "Bulk Email Message") and frappe.db.exists("Bulk Email Message", name):
 		return "Bulk Email Message"
-	if frappe.db.exists("Bulk SMS Message", name):
+	if frappe.db.exists("DocType", "Bulk SMS Message") and frappe.db.exists("Bulk SMS Message", name):
 		return "Bulk SMS Message"
-	if name.startswith("BULK-WA"):
+	if name.startswith("BULK-WA") and frappe.db.exists("DocType", "Bulk WhatsApp Message"):
 		return "Bulk WhatsApp Message"
-	if name.startswith("BULK-EM"):
+	if name.startswith("BULK-EM") and frappe.db.exists("DocType", "Bulk Email Message"):
 		return "Bulk Email Message"
-	if name.startswith("BULK-SM"):
+	if name.startswith("BULK-SM") and frappe.db.exists("DocType", "Bulk SMS Message"):
 		return "Bulk SMS Message"
 	if name.startswith("CAMP-"):
 		return "Marketing Campaign"
@@ -249,7 +249,7 @@ def _require_broadcast_write(name: str) -> None:
 	"""pause/resume/retry act on real sends — require write on the blast
 	(audit H8); these endpoints previously checked nothing."""
 	for doctype in _BROADCAST_DOCTYPES:
-		if frappe.db.exists(doctype, name):
+		if frappe.db.exists("DocType", doctype) and frappe.db.exists(doctype, name):
 			frappe.has_permission(doctype, "write", doc=name, throw=True)
 			return
 
@@ -261,8 +261,8 @@ def pause_broadcast(name: str) -> dict:
 		frappe.throw(_("Broadcast name is required."))
 	_require_broadcast_write(name)
 	doctype = _broadcast_doctype(name)
-	if not doctype or not frappe.db.exists(doctype, name):
-		frappe.throw(_("Unknown broadcast '{0}'.").format(name))
+	if not doctype or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, name):
+		frappe.throw(_("Unknown broadcast '{0}'.").format(name), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc(doctype, name)
 	if callable(getattr(doc, "check_permission", None)):
@@ -281,7 +281,7 @@ def pause_broadcast(name: str) -> dict:
 		frappe.db.set_value("Bulk Email Message", name, {"is_paused": 1, "status": "Paused"}, update_modified=False)
 		frappe.db.commit()
 		return {"email": [{"outcome": "fired", "status": "Paused"}]}
-	frappe.throw(_("Unknown broadcast '{0}'.").format(name))
+	frappe.throw(_("Unknown broadcast '{0}'.").format(name), frappe.DoesNotExistError)
 
 
 @frappe.whitelist()
@@ -291,8 +291,8 @@ def resume_broadcast(name: str) -> dict:
 		frappe.throw(_("Broadcast name is required."))
 	_require_broadcast_write(name)
 	doctype = _broadcast_doctype(name)
-	if not doctype or not frappe.db.exists(doctype, name):
-		frappe.throw(_("Unknown broadcast '{0}'.").format(name))
+	if not doctype or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, name):
+		frappe.throw(_("Unknown broadcast '{0}'.").format(name), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc(doctype, name)
 	if callable(getattr(doc, "check_permission", None)):
@@ -319,7 +319,7 @@ def resume_broadcast(name: str) -> dict:
 		)
 		frappe.db.commit()
 		return {"email": [{"outcome": "fired", "status": "Queued"}]}
-	frappe.throw(_("Unknown broadcast '{0}'.").format(name))
+	frappe.throw(_("Unknown broadcast '{0}'.").format(name), frappe.DoesNotExistError)
 
 
 @frappe.whitelist()
@@ -329,8 +329,8 @@ def retry_broadcast(name: str) -> dict:
 		frappe.throw(_("Broadcast name is required."))
 	_require_broadcast_write(name)
 	doctype = _broadcast_doctype(name)
-	if not doctype or not frappe.db.exists(doctype, name):
-		frappe.throw(_("Unknown broadcast '{0}'.").format(name))
+	if not doctype or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, name):
+		frappe.throw(_("Unknown broadcast '{0}'.").format(name), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc(doctype, name)
 	if callable(getattr(doc, "check_permission", None)):
@@ -419,6 +419,10 @@ def get_members(
 ) -> dict:
 	"""Paged member list. Reads the child table directly — loading the parent
 	Document pulls every row, which is unusable past a few thousand members."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
+	if not frappe.db.exists("DocType", "Audience Member"):
+		return {"rows": [], "total": 0}
 	frappe.has_permission(DOCTYPE, "read", audience, throw=True)
 	filters = {"parent": audience, "parenttype": DOCTYPE}
 	if status == "phone_invalid":
@@ -476,15 +480,18 @@ def update_member(
 	"""
 	from msuite_core.services.validation import pipeline
 
+	if not frappe.db.exists("DocType", DOCTYPE) or not frappe.db.exists("DocType", "Audience Member"):
+		frappe.throw(_("Member {0} not found.").format(member_name), frappe.DoesNotExistError)
+
 	parent_name = frappe.db.get_value("Audience Member", member_name, "parent")
 	if not parent_name:
-		frappe.throw(_("Member {0} not found.").format(member_name))
+		frappe.throw(_("Member {0} not found.").format(member_name), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc(DOCTYPE, parent_name)
 	doc.check_permission("write")
 	member = next((m for m in doc.members if m.name == member_name), None)
 	if not member:
-		frappe.throw(_("Member {0} not found.").format(member_name))
+		frappe.throw(_("Member {0} not found.").format(member_name), frappe.DoesNotExistError)
 
 	member.full_name = full_name
 	member.raw_phone = raw_phone
@@ -504,9 +511,12 @@ def update_member(
 @frappe.whitelist()
 def delete_member(member_name: str) -> dict:
 	"""Remove one member row and refresh the parent's rollup counts."""
+	if not frappe.db.exists("DocType", DOCTYPE) or not frappe.db.exists("DocType", "Audience Member"):
+		frappe.throw(_("Member {0} not found.").format(member_name), frappe.DoesNotExistError)
+
 	parent_name = frappe.db.get_value("Audience Member", member_name, "parent")
 	if not parent_name:
-		frappe.throw(_("Member {0} not found.").format(member_name))
+		frappe.throw(_("Member {0} not found.").format(member_name), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc(DOCTYPE, parent_name)
 	doc.check_permission("write")
@@ -521,6 +531,8 @@ def delete_member(member_name: str) -> dict:
 def preview_file(file_url: str) -> dict:
 	"""Parse an uploaded CSV/XLSX and report what the columns look like,
 	without writing anything."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("DocType Audience not found"), frappe.DoesNotExistError)
 	frappe.has_permission(DOCTYPE, "create", throw=True)
 	from msuite_campaigns.audience import validation_import_adapter as import_adapter
 
@@ -536,6 +548,8 @@ def parse_file_rows(
 	data_columns: str = "",
 ) -> list[dict]:
 	"""Parse uploaded CSV/Excel file into standard audience member rows in memory."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("DocType Audience not found"), frappe.DoesNotExistError)
 	frappe.has_permission(DOCTYPE, "create", throw=True)
 	from msuite_campaigns.audience import validation_import_adapter as import_adapter
 
@@ -603,6 +617,8 @@ def import_members(
 	validate_now: int = 1,
 ) -> dict:
 	"""Import rows from an uploaded file into an audience, then validate."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
 	from msuite_campaigns.audience import validation_import_adapter as import_adapter
 
 	doc = frappe.get_doc(DOCTYPE, audience)
@@ -634,6 +650,8 @@ def import_from_doctype(
 	name_field: str = "",
 ) -> dict:
 	"""Pull members from a specified DocType into an existing audience."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
 	doc = frappe.get_doc(DOCTYPE, audience, check_permission="write")
 	if doctype_to_import:
 		doc.import_from_doctype = 1
@@ -649,6 +667,8 @@ def import_from_doctype(
 @frappe.whitelist()
 def add_members_manual(audience: str, members: str | list) -> dict:
 	"""Append manual contact rows to an existing audience and trigger validation."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
 	doc = frappe.get_doc(DOCTYPE, audience)
 	doc.check_permission("write")
 	member_rows = _loads(members, [])
@@ -663,6 +683,8 @@ def add_members_manual(audience: str, members: str | list) -> dict:
 def validate_audience(audience: str, force: int = 0) -> dict:
 	"""Re-run validation. Enqueued past a threshold — email verification is
 	network-bound and will outlive a web request on a large audience."""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
 	doc = frappe.get_doc(DOCTYPE, audience)
 	doc.check_permission("write")
 	from msuite_core.services.validation.pipeline import INLINE_LIMIT
@@ -683,6 +705,8 @@ def validate_audience(audience: str, force: int = 0) -> dict:
 
 
 def _validate_job(audience: str, force: int = 0) -> None:
+	if not frappe.db.exists("DocType", DOCTYPE):
+		return
 	frappe.get_doc(DOCTYPE, audience).validate_members(force=force)
 
 
@@ -697,6 +721,8 @@ def get_validation_summary(audience: str) -> dict:
 	must go through the query builder — so the DB route is not the cheap
 	one-liner it looks like.)
 	"""
+	if not frappe.db.exists("DocType", DOCTYPE):
+		frappe.throw(_("Audience {0} not found").format(audience), frappe.DoesNotExistError)
 	frappe.has_permission(DOCTYPE, "read", audience, throw=True)
 	doc = frappe.get_doc(DOCTYPE, audience)
 
@@ -756,21 +782,24 @@ def _detect_broadcast_type(name: str):
 
 	for prefix, info in _BROADCAST_TYPES.items():
 		if name.startswith(prefix):
-			return info
+			doctype = info[0]
+			if frappe.db.exists("DocType", doctype):
+				return info
+			return None
 
-	if frappe.db.exists("Bulk Email Message", name):
+	if frappe.db.exists("DocType", "Bulk Email Message") and frappe.db.exists("Bulk Email Message", name):
 		return ("Bulk Email Message", "Email", "Email Recipient")
-	if frappe.db.exists("Bulk WhatsApp Message", name):
+	if frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.exists("Bulk WhatsApp Message", name):
 		return ("Bulk WhatsApp Message", "WhatsApp", "WhatsApp Recipient")
-	if frappe.db.exists("Bulk SMS Message", name):
+	if frappe.db.exists("DocType", "Bulk SMS Message") and frappe.db.exists("Bulk SMS Message", name):
 		return ("Bulk SMS Message", "SMS", "SMS Recipient")
 	if frappe.db.exists("Marketing Campaign", name):
 		mc = frappe.get_doc("Marketing Campaign", name)
-		if mc.email_blast and frappe.db.exists("Bulk Email Message", mc.email_blast):
+		if mc.email_blast and frappe.db.exists("DocType", "Bulk Email Message") and frappe.db.exists("Bulk Email Message", mc.email_blast):
 			return ("Bulk Email Message", "Email", "Email Recipient")
-		if mc.whatsapp_blast and frappe.db.exists("Bulk WhatsApp Message", mc.whatsapp_blast):
+		if mc.whatsapp_blast and frappe.db.exists("DocType", "Bulk WhatsApp Message") and frappe.db.exists("Bulk WhatsApp Message", mc.whatsapp_blast):
 			return ("Bulk WhatsApp Message", "WhatsApp", "WhatsApp Recipient")
-		if mc.sms_blast and frappe.db.exists("Bulk SMS Message", mc.sms_blast):
+		if mc.sms_blast and frappe.db.exists("DocType", "Bulk SMS Message") and frappe.db.exists("Bulk SMS Message", mc.sms_blast):
 			return ("Bulk SMS Message", "SMS", "SMS Recipient")
 		return ("Marketing Campaign", "Unified", "Email Recipient")
 
@@ -790,8 +819,8 @@ def get_broadcast_detail(
 		frappe.throw(_("Broadcast name is required."))
 
 	doctype = _broadcast_doctype(name)
-	if not doctype or not frappe.db.exists(doctype, name):
-		frappe.throw(_("Broadcast '{0}' not found.").format(name))
+	if not doctype or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, name):
+		frappe.throw(_("Broadcast '{0}' not found.").format(name), frappe.DoesNotExistError)
 
 	frappe.has_permission(doctype, "read", name, throw=True)
 
