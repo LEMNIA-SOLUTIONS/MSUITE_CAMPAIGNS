@@ -29,18 +29,11 @@ def _payload(raw) -> dict:
 
 @frappe.whitelist()
 def get_available_channels() -> dict:
-	"""Which channels this site can actually dispatch to. The wizard renders
-	its channel picker from this rather than a hard-coded list, so Phase 3's
-	SMS module appears with no frontend change."""
-	from msuite_campaigns.dispatch import materializer
+	"""Kept for old callers; delegates to the Broadcast API, which reads the
+	broadcast channel adapter registry instead of the removed legacy doctypes."""
+	from msuite_campaigns.broadcast.api.v1.broadcast import get_available_channels as _channels
 
-	return {
-		"channels": [
-			c
-			for c in hub.available_channels()
-			if frappe.has_permission(materializer.CHANNEL_DOCTYPE[c], "create")
-		]
-	}
+	return _channels()
 
 
 @frappe.whitelist()
