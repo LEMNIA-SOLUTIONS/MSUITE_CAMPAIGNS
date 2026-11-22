@@ -261,6 +261,21 @@ def list_broadcasts(
 AI_CALL_CHANNEL_KEY: str = "ai_call"
 
 
+def _can_use_ai_calling() -> bool:
+	"""True when the caller holds an ai_calling role (the app's own access rule).
+
+	Raises:
+		None. A missing ai_calling app or a denied caller returns False.
+	"""
+	try:
+		from ai_calling.ai_calling.permissions import require_calling_access
+
+		require_calling_access()
+	except (ImportError, frappe.PermissionError):
+		return False
+	return True
+
+
 @frappe.whitelist()
 def get_available_channels() -> dict:
 	"""Return the channels the current user can start a broadcast on.
@@ -269,7 +284,7 @@ def get_available_channels() -> dict:
 	`broadcast_channel_adapters` entry and the user may create a Broadcast on it
 	(read-only roles are not offered any).
 	AI Call is offered when the ai_calling app registered a campaign adapter and
-	the user may write Broadcasts.
+	the user holds an ai_calling role.
 
 	Returns:
 		dict: {"channels": [lowercase channel keys, e.g. "whatsapp", "ai_call"]}.
@@ -284,12 +299,13 @@ def get_available_channels() -> dict:
 	from msuite_campaigns.campaign.services import relationships
 
 	adapters = get_channel_adapters()
+	can_create = frappe.has_permission("Broadcast", "create")
 	channels = [
 		c.lower()
 		for c in CHANNELS
-		if c in adapters and broadcast_has_permission({"channels": [{"channel": c}]}, "create")
+		if c in adapters and can_create and broadcast_has_permission({"channels": [{"channel": c}]}, "create")
 	]
-	if relationships.get_adapters().get(AI_CALL_CHANNEL_KEY) and frappe.has_permission("Broadcast", "write"):
+	if relationships.get_adapters().get(AI_CALL_CHANNEL_KEY) and _can_use_ai_calling():
 		channels.append(AI_CALL_CHANNEL_KEY)
 	return {"channels": channels}
 
