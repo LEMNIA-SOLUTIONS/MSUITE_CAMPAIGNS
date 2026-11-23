@@ -19,7 +19,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, cint, getdate, today
+from frappe.utils import add_days, cint, get_datetime, getdate, now_datetime, today
 
 from msuite_campaigns.broadcast.constants import (
 	CHANNEL_EMAIL,
@@ -946,12 +946,38 @@ def get_broadcast_recipients(
 	return {"rows": rows, "total": total}
 
 
+def _future_scheduled_time_or_none(scheduled_time: Any) -> Any:
+	"""Return scheduled time if it is strictly in the future, otherwise None.
+
+	Params:
+		scheduled_time: Datetime object, string representation, or None.
+
+	Returns:
+		Any: Original datetime value if strictly greater than now_datetime(), otherwise None.
+
+	Raises:
+		None.
+
+	Side effects:
+		None.
+	"""
+	if not scheduled_time:
+		return None
+	try:
+		if get_datetime(scheduled_time) > now_datetime():
+			return scheduled_time
+	except Exception:
+		pass
+	return None
+
+
 @frappe.whitelist()
 def clone_broadcast(name: str) -> dict:
-	"""Clone an existing Broadcast into a new Draft Broadcast with schedule mode and times preserved.
+	"""Clone an existing Broadcast into a new Draft Broadcast with schedule mode and future times preserved.
 
-	Copies schedule_mode, scheduled_time, child channel rows, products, recipient source,
+	Copies schedule_mode, future scheduled_time, child channel rows, products, recipient source,
 	and title with suffix ' (copy)'. Resets channel statuses to 'Draft' and clears counter fields.
+	Past scheduled_time values on parent and child channel rows are cleared to None.
 
 	Params:
 		name: Name of existing Broadcast to clone.
@@ -983,7 +1009,7 @@ def clone_broadcast(name: str) -> dict:
 	new_doc.recipient_list = doc.recipient_list
 	new_doc.status = STATUS_DRAFT
 	new_doc.schedule_mode = doc.schedule_mode or SCHEDULE_SAME
-	new_doc.scheduled_time = doc.scheduled_time
+	new_doc.scheduled_time = _future_scheduled_time_or_none(doc.scheduled_time)
 	new_doc.launched_at = None
 	new_doc.launch_error = None
 	new_doc.total_recipients = 0
@@ -1005,6 +1031,7 @@ def clone_broadcast(name: str) -> dict:
 		if ch_dict.get("channel") != CHANNEL_WHATSAPP:
 			ch_dict["variable_type"] = ""
 		ch_dict["status"] = STATUS_DRAFT
+		ch_dict["scheduled_time"] = _future_scheduled_time_or_none(ch_dict.get("scheduled_time"))
 		ch_dict["recipient_count"] = 0
 		ch_dict["sent_count"] = 0
 		ch_dict["delivered_count"] = 0

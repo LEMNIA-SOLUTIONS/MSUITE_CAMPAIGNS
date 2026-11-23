@@ -117,6 +117,41 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 
 		frappe.db.commit()
 
+	@classmethod
+	def tearDownClass(cls) -> None:
+		"""Clean up test fixtures created during setUpClass.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			None.
+
+		Side effects:
+			Deletes created WhatsApp and Email test accounts/templates and commits transaction.
+		"""
+		tpl_name = getattr(cls, "wa_template", None) or f"{cls.wa_template_id}-en"
+		if frappe.db.exists("WhatsApp Templates", tpl_name):
+			frappe.delete_doc("WhatsApp Templates", tpl_name, force=True, ignore_permissions=True)
+
+		wa_acc = getattr(cls, "wa_account", None)
+		if wa_acc and frappe.db.exists("WhatsApp Account", wa_acc):
+			frappe.delete_doc("WhatsApp Account", wa_acc, force=True, ignore_permissions=True)
+
+		email_tpl = getattr(cls, "email_template", None)
+		if email_tpl and frappe.db.exists("Email Template", email_tpl):
+			frappe.delete_doc("Email Template", email_tpl, force=True, ignore_permissions=True)
+
+		email_acc = getattr(cls, "email_account", None)
+		if email_acc and frappe.db.exists("Email Account", email_acc):
+			frappe.delete_doc("Email Account", email_acc, force=True, ignore_permissions=True)
+
+		frappe.db.commit()
+		super().tearDownClass()
+
 	def setUp(self) -> None:
 		"""Initialize test environment, permissions, and test document tracker.
 
@@ -594,3 +629,146 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 		cloned2_doc = frappe.get_doc("Broadcast", cloned2_name)
 		for r in cloned2_doc.channels:
 			self.assertIsNone(r.scheduled_time)
+
+	def test_clone_with_past_row_times_clears_them_and_succeeds(self) -> None:
+		"""Validate that clone_broadcast clears past row and parent times in Per channel mode and succeeds.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If cloning fails or past times are not cleared.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows; clones Broadcast.
+		"""
+		now = now_datetime()
+		future_wa = add_to_date(now, hours=2)
+		future_em = add_to_date(now, hours=4)
+
+		payload = {
+			"title": f"{TEST_PREFIX}ClonePastPerChannel",
+			"schedule_mode": SCHEDULE_PER_CHANNEL,
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"scheduled_time": str(future_wa),
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_em),
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# Move row times and parent time into the past via db.set_value and set status to Completed
+		past_time = add_to_date(now, hours=-2)
+		frappe.db.set_value("Broadcast", b_name, "status", STATUS_COMPLETED)
+		frappe.db.set_value("Broadcast", b_name, "scheduled_time", past_time)
+		for ch_name in frappe.get_all("Broadcast Channel", filters={"parent": b_name}, pluck="name"):
+			frappe.db.set_value("Broadcast Channel", ch_name, "scheduled_time", past_time)
+			frappe.db.set_value("Broadcast Channel", ch_name, "status", STATUS_COMPLETED)
+
+		# Now clone the completed broadcast with past schedule times
+		cloned = clone_broadcast(b_name)
+		cloned_name = cloned["name"]
+		self.cleanup_broadcasts.append(cloned_name)
+
+		self.assertEqual(cloned["status"], STATUS_DRAFT)
+		self.assertEqual(cloned["schedule_mode"], SCHEDULE_PER_CHANNEL)
+		self.assertIsNone(cloned.get("scheduled_time"))
+
+		cloned_doc = frappe.get_doc("Broadcast", cloned_name)
+		self.assertIsNone(cloned_doc.scheduled_time)
+		self.assertEqual(cloned_doc.schedule_mode, SCHEDULE_PER_CHANNEL)
+		for r in cloned_doc.channels:
+			self.assertIsNone(r.scheduled_time)
+			self.assertEqual(r.status, STATUS_DRAFT)
+
+	def test_clone_with_future_row_times_keeps_them(self) -> None:
+		"""Validate that clone_broadcast preserves future row times in Per channel mode.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If future row times are lost during cloning.
+
+		Side effects:
+			Inserts and clones Broadcast records.
+		"""
+		self.test_clone_broadcast_copies_mode_and_times()
+
+	def test_clone_same_mode_with_past_parent_time_clears_it(self) -> None:
+		"""Validate that clone_broadcast clears past parent scheduled_time in Same for all channels mode.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If past scheduled_time is not cleared in cloned Broadcast.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows; clones Broadcast.
+		"""
+		now = now_datetime()
+		future_time = add_to_date(now, hours=2)
+
+		payload = {
+			"title": f"{TEST_PREFIX}ClonePastSame",
+			"schedule_mode": SCHEDULE_SAME,
+			"scheduled_time": str(future_time),
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# Move parent scheduled_time into the past and set status to Completed
+		past_time = add_to_date(now, hours=-3)
+		frappe.db.set_value("Broadcast", b_name, "status", STATUS_COMPLETED)
+		frappe.db.set_value("Broadcast", b_name, "scheduled_time", past_time)
+
+		cloned = clone_broadcast(b_name)
+		cloned_name = cloned["name"]
+		self.cleanup_broadcasts.append(cloned_name)
+
+		self.assertEqual(cloned["status"], STATUS_DRAFT)
+		self.assertEqual(cloned["schedule_mode"], SCHEDULE_SAME)
+		self.assertIsNone(cloned.get("scheduled_time"))
+
+		cloned_doc = frappe.get_doc("Broadcast", cloned_name)
+		self.assertIsNone(cloned_doc.scheduled_time)
+		self.assertEqual(cloned_doc.schedule_mode, SCHEDULE_SAME)
+		for r in cloned_doc.channels:
+			self.assertIsNone(r.scheduled_time)
+			self.assertEqual(r.status, STATUS_DRAFT)
