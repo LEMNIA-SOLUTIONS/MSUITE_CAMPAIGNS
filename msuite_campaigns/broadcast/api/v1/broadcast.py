@@ -26,6 +26,7 @@ from msuite_campaigns.broadcast.constants import (
 	CHANNEL_SMS,
 	CHANNEL_WHATSAPP,
 	CHANNELS,
+	SCHEDULE_SAME,
 	STATUS_CANCELLED,
 	STATUS_COMPLETED,
 	STATUS_DRAFT,
@@ -947,10 +948,10 @@ def get_broadcast_recipients(
 
 @frappe.whitelist()
 def clone_broadcast(name: str) -> dict:
-	"""Clone an existing Broadcast into a new Draft Broadcast without a schedule.
+	"""Clone an existing Broadcast into a new Draft Broadcast with schedule mode and times preserved.
 
-	Copies child channel rows, products, recipient source, and title with suffix ' (copy)'.
-	Resets channel statuses to 'Draft' and clears counter fields.
+	Copies schedule_mode, scheduled_time, child channel rows, products, recipient source,
+	and title with suffix ' (copy)'. Resets channel statuses to 'Draft' and clears counter fields.
 
 	Params:
 		name: Name of existing Broadcast to clone.
@@ -981,7 +982,8 @@ def clone_broadcast(name: str) -> dict:
 	new_doc.recipient_source = doc.recipient_source
 	new_doc.recipient_list = doc.recipient_list
 	new_doc.status = STATUS_DRAFT
-	new_doc.scheduled_time = None
+	new_doc.schedule_mode = doc.schedule_mode or SCHEDULE_SAME
+	new_doc.scheduled_time = doc.scheduled_time
 	new_doc.launched_at = None
 	new_doc.launch_error = None
 	new_doc.total_recipients = 0
