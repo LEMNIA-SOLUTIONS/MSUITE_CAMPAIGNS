@@ -1,0 +1,285 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-20 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "broadcast",
+  "channel",
+  "status",
+  "column_break_main",
+  "address",
+  "recipient_name",
+  "provider_message_id",
+  "section_engagement",
+  "sent_at",
+  "delivered_at",
+  "read_at",
+  "column_break_engagement",
+  "opened_at",
+  "clicked_at",
+  "section_failures",
+  "error_code",
+  "failure_reason",
+  "column_break_failures",
+  "is_retryable",
+  "retry_count",
+  "section_meta",
+  "segments",
+  "credits",
+  "source_contact",
+  "recipient_data"
+ ],
+ "fields": [
+  {
+   "fieldname": "broadcast",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Broadcast",
+   "options": "Broadcast",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "channel",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Channel",
+   "options": "WhatsApp\nEmail\nSMS",
+   "reqd": 1
+  },
+  {
+   "default": "Queued",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Queued\nSent\nDelivered\nRead\nFailed\nBounced\nRetrying\nSkipped\nUnsubscribed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "address",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Address",
+   "reqd": 1
+  },
+  {
+   "fieldname": "recipient_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Recipient Name"
+  },
+  {
+   "fieldname": "provider_message_id",
+   "fieldtype": "Data",
+   "label": "Provider Message ID",
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_engagement",
+   "fieldtype": "Section Break",
+   "label": "Engagement & Delivery"
+  },
+  {
+   "fieldname": "sent_at",
+   "fieldtype": "Datetime",
+   "label": "Sent At"
+  },
+  {
+   "fieldname": "delivered_at",
+   "fieldtype": "Datetime",
+   "label": "Delivered At"
+  },
+  {
+   "fieldname": "read_at",
+   "fieldtype": "Datetime",
+   "label": "Read At"
+  },
+  {
+   "fieldname": "column_break_engagement",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "opened_at",
+   "fieldtype": "Datetime",
+   "label": "Opened At"
+  },
+  {
+   "fieldname": "clicked_at",
+   "fieldtype": "Datetime",
+   "label": "Clicked At"
+  },
+  {
+   "fieldname": "section_failures",
+   "fieldtype": "Section Break",
+   "label": "Errors & Failures"
+  },
+  {
+   "fieldname": "error_code",
+   "fieldtype": "Data",
+   "label": "Error Code"
+  },
+  {
+   "fieldname": "failure_reason",
+   "fieldtype": "Small Text",
+   "label": "Failure Reason"
+  },
+  {
+   "fieldname": "column_break_failures",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_retryable",
+   "fieldtype": "Check",
+   "label": "Is Retryable"
+  },
+  {
+   "default": "0",
+   "fieldname": "retry_count",
+   "fieldtype": "Int",
+   "label": "Retry Count"
+  },
+  {
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break",
+   "label": "Metadata"
+  },
+  {
+   "fieldname": "segments",
+   "fieldtype": "Data",
+   "label": "Segments"
+  },
+  {
+   "default": "0",
+   "fieldname": "credits",
+   "fieldtype": "Float",
+   "label": "Credits"
+  },
+  {
+   "fieldname": "source_contact",
+   "fieldtype": "Data",
+   "label": "Source Contact"
+  },
+  {
+   "fieldname": "recipient_data",
+   "fieldtype": "JSON",
+   "label": "Recipient Data"
+  }
+ ],
+ "in_create": 0,
+ "is_submittable": 0,
+ "istable": 0,
+ "links": [],
+ "modified": "2026-11-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Broadcast",
+ "name": "Broadcast Recipient",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign Manager"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign User"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp Manager"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp User"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Email Manager"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Email User"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SMS Manager"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SMS User"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Viewer"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0
+}

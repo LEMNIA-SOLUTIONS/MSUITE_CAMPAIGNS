@@ -1,0 +1,289 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "BC-.YYYY.-.#####",
+ "creation": "2026-11-20 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "title",
+  "status",
+  "column_break_main",
+  "campaign",
+  "recipient_source",
+  "recipient_list",
+  "section_schedule",
+  "scheduled_time",
+  "launched_at",
+  "column_break_schedule",
+  "total_recipients",
+  "launch_error",
+  "section_description",
+  "description",
+  "section_channels",
+  "channels",
+  "section_products",
+  "products",
+  "section_legacy",
+  "legacy_doctype",
+  "column_break_legacy",
+  "legacy_name"
+ ],
+ "fields": [
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nScheduled\nQueued\nIn Progress\nPaused\nCompleted\nPartially Failed\nFailed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "campaign",
+   "fieldtype": "Link",
+   "label": "Marketing Campaign",
+   "options": "Marketing Campaign"
+  },
+  {
+   "default": "Recipient List",
+   "fieldname": "recipient_source",
+   "fieldtype": "Select",
+   "label": "Recipient Source",
+   "options": "Recipient List\nIndividual",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.recipient_source=='Recipient List'",
+   "fieldname": "recipient_list",
+   "fieldtype": "Link",
+   "label": "Recipient List",
+   "options": "Recipient List"
+  },
+  {
+   "fieldname": "section_schedule",
+   "fieldtype": "Section Break",
+   "label": "Schedule & Lifecycle"
+  },
+  {
+   "fieldname": "scheduled_time",
+   "fieldtype": "Datetime",
+   "label": "Scheduled Time"
+  },
+  {
+   "fieldname": "launched_at",
+   "fieldtype": "Datetime",
+   "label": "Launched At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_schedule",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_recipients",
+   "fieldtype": "Int",
+   "label": "Total Recipients",
+   "read_only": 1
+  },
+  {
+   "fieldname": "launch_error",
+   "fieldtype": "Small Text",
+   "label": "Launch Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_description",
+   "fieldtype": "Section Break",
+   "label": "Description"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "section_channels",
+   "fieldtype": "Section Break",
+   "label": "Channels"
+  },
+  {
+   "fieldname": "channels",
+   "fieldtype": "Table",
+   "label": "Channels",
+   "options": "Broadcast Channel",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_products",
+   "fieldtype": "Section Break",
+   "label": "Products"
+  },
+  {
+   "fieldname": "products",
+   "fieldtype": "Table",
+   "label": "Products",
+   "options": "Broadcast Product"
+  },
+  {
+   "collapsed": 1,
+   "fieldname": "section_legacy",
+   "fieldtype": "Section Break",
+   "label": "Legacy Migration References"
+  },
+  {
+   "fieldname": "legacy_doctype",
+   "fieldtype": "Data",
+   "label": "Legacy DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_legacy",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "legacy_name",
+   "fieldtype": "Data",
+   "label": "Legacy Name",
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-11-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Broadcast",
+ "name": "Broadcast",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Email Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SMS Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp User",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Email User",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SMS User",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Campaign User",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "MSuite Viewer"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

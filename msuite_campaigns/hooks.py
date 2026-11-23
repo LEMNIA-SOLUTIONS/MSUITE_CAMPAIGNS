@@ -35,10 +35,31 @@ msuite_home_recent = {
 # This app's plan limits, read by msuite_core.services.plans.plan_enforcer.
 msuite_plan_gates = ["msuite_campaigns.audience.plan_gates.GATES"]
 
+has_permission = {
+	"Broadcast": "msuite_campaigns.broadcast.permissions.has_permission",
+	"Broadcast Recipient": "msuite_campaigns.broadcast.permissions.recipient_has_permission",
+}
+
+permission_query_conditions = {
+	"Broadcast": "msuite_campaigns.broadcast.permissions.broadcast_query_conditions",
+	"Broadcast Recipient": "msuite_campaigns.broadcast.permissions.recipient_query_conditions",
+}
+
 doc_events = {
+	"Broadcast": {
+		"before_insert": f"{PE}.check_broadcast",
+		"before_save": f"{PE}.check_broadcast",
+		"after_insert": f"{_CCE}.on_source_save",
+		"on_update": f"{_CCE}.on_source_save",
+		"on_trash": f"{_CCE}.on_source_delete",
+	},
 	# Unified audience — routes through the shared gate dispatcher
 	# rather than its own function (see audience/plan_gates.py).
 	"Audience": {
+		"before_insert": f"{PE}.enforce_gate",
+		"before_save": f"{PE}.enforce_gate",
+	},
+	"Recipient List": {
 		"before_insert": f"{PE}.enforce_gate",
 		"before_save": f"{PE}.enforce_gate",
 	},
@@ -81,6 +102,7 @@ scheduler_events = {
 	"cron": {
 		"*/5 * * * *": [
 			"msuite_campaigns.campaign.services.lifecycle.activate_due_marketing_campaigns",
+			"msuite_campaigns.broadcast.scheduler.start_due_channels",
 		],
 		"15 * * * *": [
 			# Campaign spend sync — Analytics Aggregation (Phase 3).

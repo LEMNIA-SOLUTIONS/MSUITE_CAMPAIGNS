@@ -1,0 +1,387 @@
+{
+ "actions": [],
+ "creation": "2026-11-20 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "channel",
+  "status",
+  "column_break_common",
+  "delivery_engine",
+  "use_batched_enqueue",
+  "template_variables",
+  "section_counters",
+  "recipient_count",
+  "sent_count",
+  "delivered_count",
+  "read_count",
+  "failed_count",
+  "column_break_counters",
+  "bounced_count",
+  "opened_count",
+  "clicked_count",
+  "unsubscribed_count",
+  "retry_count",
+  "launch_error",
+  "section_whatsapp",
+  "whatsapp_account",
+  "whatsapp_template",
+  "variable_type",
+  "from_number",
+  "attach",
+  "column_break_wa_extra",
+  "is_mpm",
+  "mpm_header",
+  "thumbnail_product_retailer_id",
+  "is_carousel_template",
+  "carousel_catalog",
+  "offer_expires_at",
+  "coupon_code",
+  "tap_target_url",
+  "tap_target_title",
+  "is_lead_automation_broadcast",
+  "lead_automation_rule",
+  "section_email",
+  "email_account",
+  "email_template",
+  "column_break_email",
+  "subject_override",
+  "from_name",
+  "section_sms",
+  "sms_account",
+  "sms_template",
+  "column_break_sms",
+  "estimated_credits",
+  "actual_credits"
+ ],
+ "fields": [
+  {
+   "fieldname": "channel",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Channel",
+   "options": "WhatsApp\nEmail\nSMS",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nScheduled\nQueued\nIn Progress\nPaused\nCompleted\nPartially Failed\nFailed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_common",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "AWS",
+   "fieldname": "delivery_engine",
+   "fieldtype": "Select",
+   "label": "Delivery Engine",
+   "options": "AWS\nStandard"
+  },
+  {
+   "default": "0",
+   "fieldname": "use_batched_enqueue",
+   "fieldtype": "Check",
+   "label": "Use Batched Enqueue"
+  },
+  {
+   "fieldname": "template_variables",
+   "fieldtype": "Code",
+   "label": "Template Variables",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "section_counters",
+   "fieldtype": "Section Break",
+   "label": "Counters"
+  },
+  {
+   "default": "0",
+   "fieldname": "recipient_count",
+   "fieldtype": "Int",
+   "label": "Recipient Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "sent_count",
+   "fieldtype": "Int",
+   "label": "Sent Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "delivered_count",
+   "fieldtype": "Int",
+   "label": "Delivered Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "read_count",
+   "fieldtype": "Int",
+   "label": "Read Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "failed_count",
+   "fieldtype": "Int",
+   "label": "Failed Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counters",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "bounced_count",
+   "fieldtype": "Int",
+   "label": "Bounced Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "opened_count",
+   "fieldtype": "Int",
+   "label": "Opened Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "clicked_count",
+   "fieldtype": "Int",
+   "label": "Clicked Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "unsubscribed_count",
+   "fieldtype": "Int",
+   "label": "Unsubscribed Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "retry_count",
+   "fieldtype": "Int",
+   "label": "Retry Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "launch_error",
+   "fieldtype": "Small Text",
+   "label": "Launch Error",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "section_whatsapp",
+   "fieldtype": "Section Break",
+   "label": "WhatsApp Settings"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "label": "WhatsApp Account",
+   "options": "WhatsApp Account"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "whatsapp_template",
+   "fieldtype": "Link",
+   "label": "WhatsApp Template",
+   "options": "WhatsApp Templates"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "variable_type",
+   "fieldtype": "Select",
+   "label": "Variable Type",
+   "options": "Common\nUnique"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "from_number",
+   "fieldtype": "Data",
+   "label": "From WhatsApp Number"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "attach",
+   "fieldtype": "Attach",
+   "label": "Attach"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "column_break_wa_extra",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "is_mpm",
+   "fieldtype": "Check",
+   "label": "Enable MPM"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "mpm_header",
+   "fieldtype": "Data",
+   "label": "MPM Header"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "thumbnail_product_retailer_id",
+   "fieldtype": "Data",
+   "label": "Thumbnail Product Retailer ID"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "is_carousel_template",
+   "fieldtype": "Check",
+   "label": "Is Carousel Template"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "carousel_catalog",
+   "fieldtype": "Link",
+   "label": "Carousel Catalog",
+   "options": "Meta Product Catalog"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "offer_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Offer Expires At"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "coupon_code",
+   "fieldtype": "Data",
+   "label": "Coupon Code"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "tap_target_url",
+   "fieldtype": "Data",
+   "label": "Tap Link URL",
+   "options": "URL"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "tap_target_title",
+   "fieldtype": "Data",
+   "label": "Tap Link Title"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "is_lead_automation_broadcast",
+   "fieldtype": "Check",
+   "label": "Is Lead Automation Broadcast"
+  },
+  {
+   "depends_on": "eval:doc.channel=='WhatsApp'",
+   "fieldname": "lead_automation_rule",
+   "fieldtype": "Link",
+   "label": "Lead Automation Rule",
+   "options": "Messaging Automation"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "section_email",
+   "fieldtype": "Section Break",
+   "label": "Email Settings"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "email_account",
+   "fieldtype": "Link",
+   "label": "Sender Email Account",
+   "options": "Email Account"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "email_template",
+   "fieldtype": "Link",
+   "label": "Email Template",
+   "options": "Email Template"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "column_break_email",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "subject_override",
+   "fieldtype": "Data",
+   "label": "Subject Override"
+  },
+  {
+   "depends_on": "eval:doc.channel=='Email'",
+   "fieldname": "from_name",
+   "fieldtype": "Data",
+   "label": "From Name (Display)"
+  },
+  {
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "section_sms",
+   "fieldtype": "Section Break",
+   "label": "SMS Settings"
+  },
+  {
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "sms_account",
+   "fieldtype": "Link",
+   "label": "SMS Account",
+   "options": "SMS Account"
+  },
+  {
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "sms_template",
+   "fieldtype": "Link",
+   "label": "SMS Template",
+   "options": "SMS Template"
+  },
+  {
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "column_break_sms",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "estimated_credits",
+   "fieldtype": "Float",
+   "label": "Estimated Credits"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel=='SMS'",
+   "fieldname": "actual_credits",
+   "fieldtype": "Float",
+   "label": "Actual Credits"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Broadcast",
+ "name": "Broadcast Channel",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}
