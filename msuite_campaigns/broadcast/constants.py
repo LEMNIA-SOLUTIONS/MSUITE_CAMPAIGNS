@@ -127,6 +127,9 @@ SCHEDULE_SAME: str = "Same for all channels"
 SCHEDULE_PER_CHANNEL: str = "Per channel"
 SCHEDULE_MODES: tuple[str, ...] = (SCHEDULE_SAME, SCHEDULE_PER_CHANNEL)
 
+# Scheduler constants
+SCHEDULER_BATCH_LIMIT: int = 100
+
 # Whitelists for save_broadcast to prevent mass-assignment vulnerabilities
 WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
 	"title",

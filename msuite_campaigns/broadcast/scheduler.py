@@ -9,10 +9,13 @@ linked campaign is active or empty, moving them to Queued and initiating dispatc
 
 from __future__ import annotations
 
+import sys
+
 import frappe
 from frappe.utils import now_datetime
 
-from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL
+from msuite_campaigns.broadcast import constants
+from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL, SCHEDULER_BATCH_LIMIT
 from msuite_campaigns.broadcast.lifecycle import transition_channel
 from msuite_campaigns.campaign.services.relationships import is_campaign_active
 
@@ -23,14 +26,15 @@ def start_due_channels() -> int:
 	Finds channel rows with status 'Scheduled' whose effective scheduled_time <= now
 	(using bc.scheduled_time when mode is 'Per channel', parent scheduled_time otherwise)
 	and whose campaign is empty or active (via is_campaign_active).
+	Bounds the candidate scan to SCHEDULER_BATCH_LIMIT earliest due rows.
 
 	Transitions each matching row to Queued via lifecycle.transition_channel
 	and starts dispatch via hub.start_channel.
 
 	Idempotent: running repeatedly will not re-start already moved rows.
 	Racing a manual launch is a silent no-op (no duplicate dispatch, no error logged).
-	Failure in one row is logged via frappe.log_error and does not prevent
-	remaining rows from starting.
+	Failure in one row is rolled back and logged via frappe.log_error without
+	preventing remaining rows from starting. Successfully started rows are committed.
 
 	Returns:
 		int: Number of channel rows successfully started.
@@ -40,10 +44,17 @@ def start_due_channels() -> int:
 
 	Side effects:
 		Updates channel and broadcast statuses in DB.
+		Commits transaction after each successfully started row.
+		Rolls back per-row transaction on failure.
 		Enqueues background jobs.
 		Logs errors to tabError Log if individual channel dispatch fails.
 	"""
 	now = now_datetime()
+	limit = getattr(constants, "SCHEDULER_BATCH_LIMIT", SCHEDULER_BATCH_LIMIT)
+	curr_mod = sys.modules.get(__name__)
+	if curr_mod and hasattr(curr_mod, "SCHEDULER_BATCH_LIMIT"):
+		limit = curr_mod.SCHEDULER_BATCH_LIMIT
+
 	candidate_rows = frappe.db.sql(
 		"""
 		SELECT
@@ -71,8 +82,9 @@ def start_due_channels() -> int:
 				END
 		  ) <= %(now)s
 		ORDER BY scheduled_time ASC, bc.creation ASC
+		LIMIT %(limit)s
 		""",
-		{"now": now, "mode_per_channel": SCHEDULE_PER_CHANNEL},
+		{"now": now, "mode_per_channel": SCHEDULE_PER_CHANNEL, "limit": limit},
 		as_dict=True,
 	)
 
@@ -89,6 +101,7 @@ def start_due_channels() -> int:
 		try:
 			transition_channel(row.broadcast, row.channel, "Queued")
 		except frappe.ValidationError:
+			frappe.db.rollback()
 			# Silent no-op if manual launch concurrently transitioned the row out of Scheduled
 			current_status = frappe.db.get_value("Broadcast Channel", row.channel_row_name, "status")
 			if current_status != "Scheduled":
@@ -99,6 +112,7 @@ def start_due_channels() -> int:
 			)
 			continue
 		except Exception as exc:
+			frappe.db.rollback()
 			frappe.log_error(
 				title=f"Broadcast scheduler failed for {row.broadcast} {row.channel}",
 				message=frappe.get_traceback() if hasattr(frappe, "get_traceback") else str(exc),
@@ -109,11 +123,22 @@ def start_due_channels() -> int:
 			from msuite_campaigns.broadcast import hub
 
 			hub.start_channel(row.broadcast, row.channel)
+			frappe.db.commit()
 			started_count += 1
 		except Exception as exc:
+			frappe.db.rollback()
 			frappe.log_error(
 				title=f"Broadcast scheduler failed for {row.broadcast} {row.channel}",
 				message=frappe.get_traceback() if hasattr(frappe, "get_traceback") else str(exc),
 			)
+			try:
+				err_msg = str(exc)[:140]
+				frappe.db.set_value("Broadcast Channel", row.channel_row_name, "status", "Failed", update_modified=False)
+				frappe.db.set_value("Broadcast Channel", row.channel_row_name, "launch_error", err_msg, update_modified=False)
+				frappe.db.set_value("Broadcast", row.broadcast, "status", "Failed", update_modified=False)
+				frappe.db.set_value("Broadcast", row.broadcast, "launch_error", err_msg, update_modified=False)
+				frappe.db.commit()
+			except Exception:
+				frappe.db.rollback()
 
 	return started_count
