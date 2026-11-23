@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
@@ -16,6 +18,10 @@ from msuite_campaigns.broadcast.constants import (
 	CHANNEL_WHATSAPP,
 	CHANNELS,
 	RECIPIENT_INSERT_BATCH,
+	SCHEDULE_MODES,
+	SCHEDULE_PER_CHANNEL,
+	SCHEDULE_SAME,
+	STATUS_DRAFT,
 	STATUS_SCHEDULED,
 )
 
@@ -64,18 +70,97 @@ CHANNEL_SPECIFIC_FIELDS: dict[str, tuple[str, ...]] = {
 class Broadcast(Document):
 	"""Broadcast document managing multi-channel outbound message campaigns."""
 
+	def before_validate(self) -> None:
+		"""Prepare Broadcast fields before validation.
+
+		1. Handle schedule mode switches:
+		   - Per channel -> Same for all channels: clear row scheduled times.
+		   - Same for all channels -> Per channel: seed row scheduled times from parent scheduled_time.
+		2. In Per channel mode, derive parent scheduled_time as earliest row time.
+
+		Raises:
+			None.
+
+		Side effects:
+			Mutates child row scheduled_time or self.scheduled_time.
+		"""
+		self._handle_schedule_mode_switch()
+		self._derive_parent_scheduled_time()
+
+	def _handle_schedule_mode_switch(self) -> None:
+		"""Handle schedule mode switch between Same and Per channel.
+
+		Switching Per channel -> Same clears row scheduled times.
+		Switching Same -> Per channel seeds row scheduled times from parent scheduled_time.
+
+		Raises:
+			None.
+
+		Side effects:
+			Modifies row.scheduled_time on child channel rows.
+		"""
+		if self.is_new():
+			return
+
+		prev_doc = self.get_doc_before_save()
+		if not prev_doc and self.name and frappe.db.exists(self.doctype, self.name):
+			prev_doc = frappe.get_doc(self.doctype, self.name)
+
+		if not prev_doc:
+			return
+
+		prev_mode = getattr(prev_doc, "schedule_mode", None) or SCHEDULE_SAME
+		curr_mode = self.schedule_mode or SCHEDULE_SAME
+
+		if prev_mode != curr_mode:
+			if curr_mode == SCHEDULE_SAME:
+				for row in self.channels or []:
+					row.scheduled_time = None
+			elif curr_mode == SCHEDULE_PER_CHANNEL:
+				for row in self.channels or []:
+					if not row.scheduled_time:
+						row.scheduled_time = self.scheduled_time
+
+	def _derive_parent_scheduled_time(self) -> None:
+		"""Derive parent scheduled_time in Per channel mode from earliest row time.
+
+		In Per channel mode, parent scheduled_time is derived as the earliest
+		non-empty scheduled_time among child channel rows. If no rows have
+		scheduled_time, parent scheduled_time is set to None.
+
+		Raises:
+			None.
+
+		Side effects:
+			Sets self.scheduled_time.
+		"""
+		mode = self.schedule_mode or SCHEDULE_SAME
+		if mode == SCHEDULE_PER_CHANNEL:
+			row_times = []
+			for row in self.channels or []:
+				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+				if st:
+					row_times.append(st)
+			if row_times:
+				self.scheduled_time = min(row_times, key=lambda t: get_datetime(t))
+			else:
+				self.scheduled_time = None
+
 	def validate(self) -> None:
 		"""Validate Broadcast document invariants.
 
 		Order of validation:
-		1. At least one channel row is present.
-		2. At most one row per channel type (names duplicate channel on failure).
-		3. Each channel row contains its required account and template fields.
-		4. Channel rows do not carry fields belonging to another channel.
-		5. Recipient list is required when recipient_source is 'Recipient List'
+		1. Derive parent scheduled_time in Per channel mode if not already run.
+		2. Locked channel rows cannot be removed or have scheduled_time changed.
+		3. At least one channel row is present.
+		4. At most one row per channel type (names duplicate channel on failure).
+		5. Each channel row contains its required account and template fields.
+		6. Channel rows do not carry fields belonging to another channel.
+		7. Recipient list is required when recipient_source is 'Recipient List'
 		   and must be empty when 'Individual'.
-		6. Broadcast products child rows are only allowed when a WhatsApp channel is present.
-		7. Scheduled time cannot be in the past when status is 'Scheduled'.
+		8. Broadcast products child rows are only allowed when a WhatsApp channel is present.
+		9. Schedule mode and channel row scheduled times are valid.
+		10. Scheduled time cannot be in the past when status is 'Scheduled'.
 
 		Raises:
 			frappe.ValidationError: If any of the invariants are violated.
@@ -83,13 +168,70 @@ class Broadcast(Document):
 		Side effects:
 			None. Pure in-memory document validation.
 		"""
+		self._derive_parent_scheduled_time()
+		self._validate_locked_rows()
 		self._validate_channel_count()
 		self._validate_unique_channels()
 		self._validate_channel_required_fields()
 		self._validate_foreign_channel_fields()
 		self._validate_recipient_source()
 		self._validate_products()
+		self._validate_schedule_mode()
 		self._validate_scheduled_time()
+
+	def _validate_locked_rows(self) -> None:
+		"""Ensure locked channel rows (not Draft or Scheduled) cannot be removed or rescheduled.
+
+		Raises:
+			frappe.ValidationError: If a launched/locked channel row was removed or its
+				scheduled_time was modified.
+
+		Side effects:
+			None.
+		"""
+		if self.is_new():
+			return
+
+		prev_doc = self.get_doc_before_save()
+		if not prev_doc and self.name and frappe.db.exists(self.doctype, self.name):
+			prev_doc = frappe.get_doc(self.doctype, self.name)
+
+		if not prev_doc:
+			return
+
+		curr_channels = {getattr(r, "channel", None) for r in self.channels or []}
+		curr_names = {getattr(r, "name", None) for r in self.channels or [] if getattr(r, "name", None)}
+
+		for prev_row in prev_doc.channels or []:
+			prev_status = getattr(prev_row, "status", None)
+			if prev_status not in (STATUS_DRAFT, STATUS_SCHEDULED):
+				row_name = getattr(prev_row, "name", None)
+				row_channel = getattr(prev_row, "channel", None)
+
+				# Check if locked row was removed
+				if (row_name and row_name not in curr_names) and (row_channel not in curr_channels):
+					frappe.throw(
+						_("Cannot remove channel {0} because it is in status {1}.").format(
+							row_channel, prev_status
+						)
+					)
+
+				# Find matching current row
+				curr_row = None
+				if row_name and row_name in curr_names:
+					curr_row = next((r for r in self.channels or [] if getattr(r, "name", None) == row_name), None)
+				if not curr_row and row_channel in curr_channels:
+					curr_row = next((r for r in self.channels or [] if getattr(r, "channel", None) == row_channel), None)
+
+				if curr_row:
+					prev_time = get_datetime(getattr(prev_row, "scheduled_time", None)) if getattr(prev_row, "scheduled_time", None) else None
+					curr_time = get_datetime(getattr(curr_row, "scheduled_time", None)) if getattr(curr_row, "scheduled_time", None) else None
+					if prev_time != curr_time:
+						frappe.throw(
+							_("Cannot change scheduled time for channel {0} because it is in status {1}.").format(
+								row_channel, prev_status
+							)
+						)
 
 	def _validate_channel_count(self) -> None:
 		"""Ensure at least one channel row is defined.
@@ -203,6 +345,47 @@ class Broadcast(Document):
 				p_label = self.meta.get_label("products") or "Products"
 				frappe.throw(_("{0} are only allowed when a WhatsApp channel is present.").format(p_label))
 
+	def _validate_schedule_mode(self) -> None:
+		"""Validate schedule mode and channel row scheduled times.
+
+		Rules:
+		1. schedule_mode must be one of SCHEDULE_MODES.
+		2. In 'Same for all channels' mode, channel rows cannot have scheduled_time set.
+		3. In 'Per channel' mode, channel row scheduled_time cannot be in the past for
+		   unlaunched (Draft/Scheduled) rows.
+
+		Raises:
+			frappe.ValidationError: If schedule_mode is invalid, if row times are set
+				in Same mode, or if any row time is in the past in Per channel mode.
+
+		Side effects:
+			None.
+		"""
+		mode = self.schedule_mode or SCHEDULE_SAME
+		if mode not in SCHEDULE_MODES:
+			frappe.throw(_("Invalid schedule mode {0}.").format(mode))
+
+		if mode == SCHEDULE_SAME:
+			for row in self.channels or []:
+				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+				if st:
+					channel = row.get("channel") if isinstance(row, dict) else getattr(row, "channel", None)
+					frappe.throw(
+						_("Channel {0} cannot have a scheduled time when schedule mode is {1}.").format(
+							channel, SCHEDULE_SAME
+						)
+					)
+		elif mode == SCHEDULE_PER_CHANNEL:
+			for row in self.channels or []:
+				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+				status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
+				if st and status in (STATUS_DRAFT, STATUS_SCHEDULED, None):
+					if get_datetime(st) < now_datetime():
+						channel = row.get("channel") if isinstance(row, dict) else getattr(row, "channel", None)
+						frappe.throw(
+							_("Scheduled time for channel {0} cannot be in the past.").format(channel)
+						)
+
 	def _validate_scheduled_time(self) -> None:
 		"""Ensure scheduled_time is not in the past when status is Scheduled.
 
@@ -219,6 +402,33 @@ class Broadcast(Document):
 				frappe.throw(_("{0} is required when status is Scheduled.").format(st_label))
 			if get_datetime(self.scheduled_time) < now_datetime():
 				frappe.throw(_("{0} cannot be in the past.").format(st_label))
+
+	def effective_time(self, row: dict | Document | None = None) -> datetime | None:
+		"""Return the effective scheduled datetime for a channel row.
+
+		In 'Same for all channels' mode, returns the parent Broadcast.scheduled_time.
+		In 'Per channel' mode, returns the row's scheduled_time (None means send at launch).
+
+		Args:
+			row: Broadcast Channel child document or dict, or None.
+
+		Returns:
+			datetime | None: Effective scheduled time in site time zone, or None.
+
+		Raises:
+			None.
+
+		Side effects:
+			None.
+		"""
+		mode = self.schedule_mode or SCHEDULE_SAME
+		if mode == SCHEDULE_PER_CHANNEL:
+			if not row:
+				return None
+			val = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+			return get_datetime(val) if val else None
+
+		return get_datetime(self.scheduled_time) if self.scheduled_time else None
 
 	def channel_row(self, channel: str) -> "Document | None":
 		"""Return the child row for the given channel, or None if absent.
