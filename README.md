@@ -61,7 +61,8 @@ The architecture consists of six doctypes:
 | `campaign` | Marketing Campaign | Link | Linked Marketing Campaign. |
 | `recipient_source` | Recipient Source | Select | Recipient List or Individual. |
 | `recipient_list` | Recipient List | Link | Linked Recipient List document. |
-| `scheduled_time` | Scheduled Time | Datetime | Optional future dispatch time. |
+| `schedule_mode` | Schedule Mode | Select | `Same for all channels` (default) or `Per channel`. |
+| `scheduled_time` | Scheduled Time | Datetime | Optional future dispatch time. In `Same for all channels` mode every channel uses it. In `Per channel` mode it is derived as the earliest channel time (read from the rows). |
 | `launched_at` | Launched At | Datetime | Timestamp when launch started. |
 | `total_recipients` | Total Recipients | Int | Total recipients across channels. |
 | `launch_error` | Launch Error | Small Text | Error message if launch fails. |
@@ -77,6 +78,7 @@ The architecture consists of six doctypes:
 |---|---|---|---|
 | `channel` | Channel | Select | WhatsApp, Email, or SMS. |
 | `status` | Status | Select | Status of the channel execution. |
+| `scheduled_time` | Scheduled Time | Datetime | Dispatch time for this channel. Only allowed when the Broadcast's `schedule_mode` is `Per channel`; empty means send at launch. |
 | `delivery_engine` | Delivery Engine | Select | AWS or Standard. |
 | `use_batched_enqueue` | Use Batched Enqueue | Check | Enables batched background enqueue. |
 | `template_variables` | Template Variables | Code | JSON mapping of template variables. |
@@ -116,6 +118,13 @@ The architecture consists of six doctypes:
 | `estimated_credits` | Estimated Credits | Float | Pre-send estimated SMS credit cost. |
 | `actual_credits` | Actual Credits | Float | Total billed SMS credit usage. |
 
+#### Scheduling
+
+- `Broadcast.schedule_mode` decides how channels are timed. Existing Broadcasts are set to `Same for all channels` by patch `set_broadcast_schedule_mode`.
+- Validation (`Broadcast.validate`): in `Same for all channels` mode no row may carry a time; in `Per channel` mode a Draft or Scheduled row's time cannot be in the past (the error names the channel); a launched row's time cannot change and a launched row cannot be removed; at least one channel row stays.
+- Switching mode on a saved Broadcast: Per channel to Same clears row times; Same to Per channel seeds empty row times from the parent time.
+- `clone_broadcast` keeps `schedule_mode` and copies times only while they are still in the future.
+
 #### Lifecycle and Transitions
 
 Broadcasts and channels use nine statuses: `Draft`, `Scheduled`, `Queued`, `In Progress`, `Paused`, `Completed`, `Partially Failed`, `Failed`, and `Cancelled`.
@@ -154,7 +163,7 @@ The parent `Broadcast.status` is derived from child `Broadcast Channel` rows usi
 Message delivery executes in seven stages:
 1. **Save / Launch Request**: The user saves a `Broadcast` in `Draft` or `Scheduled` status via `api.v1.broadcast.save_broadcast`, or launches it via `api.v1.broadcast.launch_broadcast`. These whitelisted API methods enforce permission checks (`write` permission on `Broadcast`). When launching, execution delegates to `hub.launch`.
 2. **Materialize**: Inside `hub.launch`, each channel executes with savepoint isolation. The hub validates the channel using the adapter's optional `validate_channel` function. It calls `materializer.materialize(broadcast, channel)` to load recipient contacts, normalize phone numbers and emails, exclude opted-out contacts, and write `Broadcast Recipient` rows in batches of 1000 with status `Queued`.
-3. **Launch**: `hub.launch` calls `lifecycle.launch(broadcast, channel)`, which also runs `plan_enforcer.check_broadcast_launch` to enforce plan limits and channel monthly quotas. If `scheduled_time` is in the future, the channel transitions to `Scheduled`. Otherwise, the channel transitions to `Queued` and updates the parent status.
+3. **Launch**: `hub.launch` calls `lifecycle.launch(broadcast, channel)`, which also runs `plan_enforcer.check_broadcast_launch` to enforce plan limits and channel monthly quotas. Each channel uses its effective time (`Broadcast.effective_time(row)`: the parent `scheduled_time` in `Same for all channels` mode, the row's own `scheduled_time` in `Per channel` mode). If it is in the future, the channel transitions to `Scheduled`. Otherwise (empty or past), the channel transitions to `Queued` and updates the parent status.
 4. **Start Channel**: When a channel transitions to `Queued`, `hub.launch` calls `hub.start_channel(broadcast, channel)`. `hub.start_channel` advances channel status from `Queued` to `In Progress` via `lifecycle.transition_channel`. It routes delivery based on whether AWS delivery is enabled: it calls `aws.export_and_enqueue_channel` if AWS is configured, or `enqueue.enqueue_broadcast_channel` for the Standard engine.
 5. **Standard Enqueue or AWS Hand-off**:
    - For `Standard`: `enqueue.enqueue_broadcast_channel` splits recipients into chunks of 500 and queues background jobs that run `enqueue.run_chunk`. Each chunk checks that the channel is still active, calls the adapter's `send_one` for each recipient, and applies the returned status through `recipients.apply_delivery_status`. An exception in `send_one` marks only that recipient `Failed`.
@@ -241,7 +250,7 @@ The broadcast scheduler initiates scheduled dispatches:
 - Function: `msuite_campaigns.broadcast.scheduler.start_due_channels() -> int`.
 - Schedule: Runs every five minutes via `scheduler_events["cron"]["*/5 * * * *"]` in `hooks.py`.
 - Operation:
-  1. Finds channel rows with status `Scheduled` where `scheduled_time <= now`.
+  1. Finds channel rows with status `Scheduled` whose effective time is `<= now` (the row's `scheduled_time` in `Per channel` mode, the parent's otherwise).
   2. Verifies that the linked campaign is active via `is_campaign_active(campaign)`.
   3. Transitions each due channel row to `Queued`.
   4. Starts delivery via `hub.start_channel(broadcast, channel)`.
