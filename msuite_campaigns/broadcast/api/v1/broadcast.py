@@ -494,10 +494,38 @@ def save_broadcast(
 				b_doc.set(field, data[field])
 
 		if "channels" in data:
+			stored_by_channel = {r.channel: r for r in (b_doc.channels or [])}
+			new_channels = []
+			for ch in data.get("channels", []):
+				if not isinstance(ch, dict):
+					continue
+				ch_name = ch.get("channel")
+				if ch_name in stored_by_channel:
+					stored_row = stored_by_channel[ch_name]
+					if stored_row.status in (STATUS_DRAFT, STATUS_SCHEDULED):
+						for field in WRITABLE_CHANNEL_FIELDS:
+							if field in ch:
+								stored_row.set(field, ch[field])
+						if stored_row.channel != CHANNEL_WHATSAPP:
+							stored_row.variable_type = ""
+						new_channels.append(stored_row)
+					else:
+						# Locked row: ignore payload values; keep stored row as is
+						new_channels.append(stored_row)
+				else:
+					# New channel row: status Draft, counters 0
+					new_channels.append(_sanitize_channel_row(ch))
+
 			b_doc.set("channels", [])
-			for ch in data["channels"]:
-				if isinstance(ch, dict):
-					b_doc.append("channels", _sanitize_channel_row(ch))
+			for item in new_channels:
+				if isinstance(item, dict):
+					b_doc.append("channels", item)
+				else:
+					item.parent = b_doc.name
+					item.parenttype = b_doc.doctype
+					item.parentfield = "channels"
+					item.idx = len(b_doc.channels) + 1
+					b_doc.channels.append(item)
 
 		if "products" in data:
 			b_doc.set("products", [])

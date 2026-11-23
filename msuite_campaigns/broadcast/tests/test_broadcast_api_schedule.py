@@ -97,14 +97,36 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 		else:
 			cls.wa_template = tpl_name
 
+		cls.wa_template_changed_id = "test_wa_tpl_apisched_ch"
+		tpl_ch_name = f"{cls.wa_template_changed_id}-en"
+		if not frappe.db.exists("WhatsApp Templates", tpl_ch_name):
+			try:
+				from msuite_whatsapp.whatsapp.doctype.whatsapp_templates.whatsapp_templates import WhatsAppTemplates
+
+				with patch.object(WhatsAppTemplates, "push_to_meta", lambda self: None):
+					tpl_doc2 = frappe.get_doc({
+						"doctype": "WhatsApp Templates",
+						"template_name": cls.wa_template_changed_id,
+						"whatsapp_account": cls.wa_account,
+						"category": "MARKETING",
+						"status": "APPROVED",
+						"language": "en",
+					}).insert(ignore_permissions=True, ignore_links=True)
+					cls.wa_template_changed = tpl_doc2.name
+			except Exception:
+				cls.wa_template_changed = tpl_ch_name
+		else:
+			cls.wa_template_changed = tpl_ch_name
+
 		cls.email_account = "Test Email Account APISched"
 		if not frappe.db.exists("Email Account", cls.email_account):
-			frappe.get_doc({
-				"doctype": "Email Account",
-				"email_id": "test-apisched@example.com",
-				"email_account_name": cls.email_account,
-				"enable_outgoing": 1,
-			}).insert(ignore_permissions=True, ignore_links=True)
+			with patch("frappe.utils.global_search.sync_value_in_queue", lambda val: None):
+				frappe.get_doc({
+					"doctype": "Email Account",
+					"email_id": "test-apisched@example.com",
+					"email_account_name": cls.email_account,
+					"enable_outgoing": 1,
+				}).insert(ignore_permissions=True, ignore_links=True)
 
 		cls.email_template = "Test Email Template APISched"
 		if not frappe.db.exists("Email Template", cls.email_template):
@@ -136,6 +158,10 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 		tpl_name = getattr(cls, "wa_template", None) or f"{cls.wa_template_id}-en"
 		if frappe.db.exists("WhatsApp Templates", tpl_name):
 			frappe.delete_doc("WhatsApp Templates", tpl_name, force=True, ignore_permissions=True)
+
+		tpl_ch_name = getattr(cls, "wa_template_changed", None) or f"{cls.wa_template_changed_id}-en"
+		if frappe.db.exists("WhatsApp Templates", tpl_ch_name):
+			frappe.delete_doc("WhatsApp Templates", tpl_ch_name, force=True, ignore_permissions=True)
 
 		wa_acc = getattr(cls, "wa_account", None)
 		if wa_acc and frappe.db.exists("WhatsApp Account", wa_acc):
@@ -772,3 +798,266 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 		for r in cloned_doc.channels:
 			self.assertIsNone(r.scheduled_time)
 			self.assertEqual(r.status, STATUS_DRAFT)
+
+	def test_save_keeps_locked_row_untouched_and_scheduled_row_scheduled(self) -> None:
+		"""Validate save_broadcast keeps locked rows untouched and preserves scheduled row status.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If locked row fields mutate or scheduled row loses its status.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows.
+		"""
+		now = now_datetime()
+		future_time_1 = add_to_date(now, hours=2)
+		future_time_2 = add_to_date(now, hours=4)
+
+		payload = {
+			"title": f"{TEST_PREFIX}LockedUntouched",
+			"schedule_mode": SCHEDULE_PER_CHANNEL,
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"scheduled_time": str(future_time_1),
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_time_1),
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# WhatsApp set Completed with counters via db.set_value; Email Scheduled with future time
+		wa_row_name = frappe.db.get_value("Broadcast Channel", {"parent": b_name, "channel": CHANNEL_WHATSAPP}, "name")
+		frappe.db.set_value("Broadcast Channel", wa_row_name, {
+			"status": STATUS_COMPLETED,
+			"sent_count": 42,
+			"delivered_count": 40,
+		})
+		email_row_name = frappe.db.get_value("Broadcast Channel", {"parent": b_name, "channel": CHANNEL_EMAIL}, "name")
+		frappe.db.set_value("Broadcast Channel", email_row_name, {
+			"status": STATUS_SCHEDULED,
+			"scheduled_time": future_time_1,
+		})
+		frappe.db.set_value("Broadcast", b_name, {
+			"status": STATUS_SCHEDULED,
+			"scheduled_time": future_time_1,
+		})
+
+		# Save with new Email time and changed WhatsApp template
+		update_payload = {
+			"title": f"{TEST_PREFIX}LockedUntouched Updated",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template_changed,
+					"sent_count": 999,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_time_2),
+				},
+			],
+		}
+		save_broadcast(doc=json.dumps(update_payload), name=b_name)
+
+		doc = frappe.get_doc("Broadcast", b_name)
+		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
+		self.assertEqual(wa_row.name, wa_row_name)
+		self.assertEqual(wa_row.status, STATUS_COMPLETED)
+		self.assertEqual(wa_row.sent_count, 42)
+		self.assertEqual(wa_row.delivered_count, 40)
+		self.assertEqual(wa_row.whatsapp_template, self.wa_template)
+
+		email_row = doc.channel_row(CHANNEL_EMAIL)
+		self.assertEqual(email_row.name, email_row_name)
+		self.assertEqual(email_row.status, STATUS_SCHEDULED)
+		self.assertEqual(get_datetime(email_row.scheduled_time), get_datetime(future_time_2))
+
+	def test_save_omitting_locked_row_is_rejected_naming_channel(self) -> None:
+		"""Validate save_broadcast rejects omitting a locked row, naming the channel.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If validation does not reject omitted locked row with expected message.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows.
+		"""
+		now = now_datetime()
+		future_time = add_to_date(now, hours=2)
+
+		payload = {
+			"title": f"{TEST_PREFIX}OmitLocked",
+			"schedule_mode": SCHEDULE_PER_CHANNEL,
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_time),
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# WhatsApp Completed, Email Scheduled
+		wa_row_name = frappe.db.get_value("Broadcast Channel", {"parent": b_name, "channel": CHANNEL_WHATSAPP}, "name")
+		frappe.db.set_value("Broadcast Channel", wa_row_name, "status", STATUS_COMPLETED)
+		email_row_name = frappe.db.get_value("Broadcast Channel", {"parent": b_name, "channel": CHANNEL_EMAIL}, "name")
+		frappe.db.set_value("Broadcast Channel", email_row_name, "status", STATUS_SCHEDULED)
+		frappe.db.set_value("Broadcast", b_name, "status", STATUS_SCHEDULED)
+
+		# Omit locked WhatsApp row from payload
+		update_payload = {
+			"channels": [
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_time),
+				},
+			],
+		}
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			save_broadcast(doc=json.dumps(update_payload), name=b_name)
+		self.assertIn("Cannot remove channel WhatsApp because it is in status Completed.", str(ctx.exception))
+
+	def test_save_removes_omitted_draft_row(self) -> None:
+		"""Validate save_broadcast removes an omitted Draft row.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If omitted Draft row is not removed.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows.
+		"""
+		payload = {
+			"title": f"{TEST_PREFIX}RemoveDraft",
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# Omit Email row
+		update_payload = {
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+			],
+		}
+		save_broadcast(doc=json.dumps(update_payload), name=b_name)
+
+		doc = frappe.get_doc("Broadcast", b_name)
+		self.assertEqual(len(doc.channels), 1)
+		self.assertEqual(doc.channels[0].channel, CHANNEL_WHATSAPP)
+		self.assertIsNone(doc.channel_row(CHANNEL_EMAIL))
+
+	def test_save_adds_new_channel_as_draft(self) -> None:
+		"""Validate save_broadcast adds a new channel with status Draft and zeroed counters.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If added channel is not Draft or counters are non-zero.
+
+		Side effects:
+			Inserts and updates Broadcast and child rows.
+		"""
+		payload = {
+			"title": f"{TEST_PREFIX}AddNewChannel",
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+			],
+		}
+		res = save_broadcast(doc=json.dumps(payload))
+		b_name = res["name"]
+		self.cleanup_broadcasts.append(b_name)
+
+		# Add Email channel
+		update_payload = {
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"status": STATUS_COMPLETED,
+					"sent_count": 100,
+				},
+			],
+		}
+		save_broadcast(doc=json.dumps(update_payload), name=b_name)
+
+		doc = frappe.get_doc("Broadcast", b_name)
+		self.assertEqual(len(doc.channels), 2)
+		em_row = doc.channel_row(CHANNEL_EMAIL)
+		self.assertIsNotNone(em_row)
+		self.assertEqual(em_row.status, STATUS_DRAFT)
+		self.assertEqual(em_row.sent_count, 0)
+
