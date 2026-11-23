@@ -24,6 +24,7 @@ from msuite_campaigns.broadcast.constants import (
 	STATUS_DRAFT,
 	STATUS_SCHEDULED,
 )
+from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 
 # Required fields per channel (fieldname, label lookup key)
 REQUIRED_CHANNEL_FIELDS: dict[str, tuple[str, ...]] = {
@@ -73,10 +74,11 @@ class Broadcast(Document):
 	def before_validate(self) -> None:
 		"""Prepare Broadcast fields before validation.
 
-		1. Handle schedule mode switches:
+		1. Normalize scheduled times (parent and child rows) to site naive datetimes.
+		2. Handle schedule mode switches:
 		   - Per channel -> Same for all channels: clear row scheduled times.
 		   - Same for all channels -> Per channel: seed row scheduled times from parent scheduled_time.
-		2. In Per channel mode, derive parent scheduled_time as earliest row time.
+		3. In Per channel mode, derive parent scheduled_time as earliest row time.
 
 		Raises:
 			None.
@@ -84,8 +86,29 @@ class Broadcast(Document):
 		Side effects:
 			Mutates child row scheduled_time or self.scheduled_time.
 		"""
+		self._normalize_scheduled_times()
 		self._handle_schedule_mode_switch()
 		self._derive_parent_scheduled_time()
+
+	def _normalize_scheduled_times(self) -> None:
+		"""Normalize parent and child row scheduled_time to naive site datetimes.
+
+		Raises:
+			frappe.ValidationError: If any scheduled_time string is invalid.
+
+		Side effects:
+			Converts self.scheduled_time and row.scheduled_time to naive datetime objects.
+		"""
+		if self.scheduled_time:
+			self.scheduled_time = to_site_datetime(self.scheduled_time)
+		for row in self.channels or []:
+			st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+			if st:
+				normalized = to_site_datetime(st)
+				if isinstance(row, dict):
+					row["scheduled_time"] = normalized
+				else:
+					row.scheduled_time = normalized
 
 	def _handle_schedule_mode_switch(self) -> None:
 		"""Handle schedule mode switch between Same and Per channel.
@@ -123,7 +146,7 @@ class Broadcast(Document):
 			elif curr_mode == SCHEDULE_PER_CHANNEL:
 				is_parent_future = False
 				if self.scheduled_time:
-					st_dt = get_datetime(self.scheduled_time)
+					st_dt = to_site_datetime(self.scheduled_time)
 					if st_dt and st_dt > now_datetime():
 						is_parent_future = True
 
@@ -153,9 +176,11 @@ class Broadcast(Document):
 			for row in self.channels or []:
 				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
 				if st:
-					row_times.append(st)
+					st_dt = to_site_datetime(st)
+					if st_dt:
+						row_times.append(st_dt)
 			if row_times:
-				self.scheduled_time = min(row_times, key=lambda t: get_datetime(t))
+				self.scheduled_time = min(row_times)
 			else:
 				self.scheduled_time = None
 
@@ -237,8 +262,8 @@ class Broadcast(Document):
 					curr_row = next((r for r in self.channels or [] if getattr(r, "channel", None) == row_channel), None)
 
 				if curr_row:
-					prev_time = get_datetime(getattr(prev_row, "scheduled_time", None)) if getattr(prev_row, "scheduled_time", None) else None
-					curr_time = get_datetime(getattr(curr_row, "scheduled_time", None)) if getattr(curr_row, "scheduled_time", None) else None
+					prev_time = to_site_datetime(getattr(prev_row, "scheduled_time", None))
+					curr_time = to_site_datetime(getattr(curr_row, "scheduled_time", None))
 					if prev_time != curr_time:
 						frappe.throw(
 							_("Cannot change scheduled time for channel {0} because it is in status {1}.").format(
@@ -396,7 +421,8 @@ class Broadcast(Document):
 				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
 				status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
 				if st and status in (STATUS_DRAFT, STATUS_SCHEDULED, None):
-					if get_datetime(st) < now_datetime():
+					st_dt = to_site_datetime(st)
+					if st_dt and st_dt < now_datetime():
 						channel = row.get("channel") if isinstance(row, dict) else getattr(row, "channel", None)
 						frappe.throw(
 							_("Scheduled time for channel {0} cannot be in the past.").format(channel)
@@ -416,7 +442,8 @@ class Broadcast(Document):
 			st_label = self.meta.get_label("scheduled_time") or "Scheduled Time"
 			if not self.scheduled_time:
 				frappe.throw(_("{0} is required when status is Scheduled.").format(st_label))
-			if get_datetime(self.scheduled_time) < now_datetime():
+			st_dt = to_site_datetime(self.scheduled_time)
+			if st_dt and st_dt < now_datetime():
 				frappe.throw(_("{0} cannot be in the past.").format(st_label))
 
 	def effective_time(self, row: dict | Document | None = None) -> datetime | None:
@@ -442,9 +469,9 @@ class Broadcast(Document):
 			if not row:
 				return None
 			val = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
-			return get_datetime(val) if val else None
+			return to_site_datetime(val) if val else None
 
-		return get_datetime(self.scheduled_time) if self.scheduled_time else None
+		return to_site_datetime(self.scheduled_time) if self.scheduled_time else None
 
 	def channel_row(self, channel: str) -> "Document | None":
 		"""Return the child row for the given channel, or None if absent.

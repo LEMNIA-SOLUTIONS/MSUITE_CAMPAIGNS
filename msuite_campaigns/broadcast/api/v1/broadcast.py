@@ -41,6 +41,7 @@ from msuite_campaigns.broadcast.constants import (
 )
 from msuite_campaigns.broadcast.permissions import has_permission as broadcast_has_permission
 from msuite_campaigns.broadcast.permissions import permitted_channels
+from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 
 MAX_PAGE_LENGTH: int = 100
 EXPORT_LIMIT: int = 10000
@@ -992,7 +993,8 @@ def _future_scheduled_time_or_none(scheduled_time: Any) -> Any:
 	if not scheduled_time:
 		return None
 	try:
-		if get_datetime(scheduled_time) > now_datetime():
+		dt = to_site_datetime(scheduled_time)
+		if dt and dt > now_datetime():
 			return scheduled_time
 	except Exception:
 		pass

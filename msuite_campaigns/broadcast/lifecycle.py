@@ -18,6 +18,7 @@ from frappe.utils import cint, get_datetime, now_datetime
 
 from msuite_campaigns.broadcast.constants import ALLOWED_TRANSITIONS
 from msuite_campaigns.broadcast.recipients import requeue_failed_recipients
+from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 from msuite_core.services.plans.plan_enforcer import check_broadcast_launch
 
 
@@ -290,7 +291,8 @@ def launch(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	transitions: list[tuple[Any, str]] = []
 	for row in target_rows:
 		eff_time = doc.effective_time(row)
-		is_future = bool(eff_time and eff_time > now_datetime())
+		eff_dt = to_site_datetime(eff_time)
+		is_future = bool(eff_dt and eff_dt > now_datetime())
 		target_status = "Scheduled" if is_future else "Queued"
 
 		if row.status in ("Draft", "Scheduled"):

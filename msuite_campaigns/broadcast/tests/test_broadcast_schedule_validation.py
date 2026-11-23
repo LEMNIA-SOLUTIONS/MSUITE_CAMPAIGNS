@@ -506,3 +506,63 @@ class TestBroadcastScheduleValidation(IntegrationTestCase):
 		# WhatsApp row must NOT be seeded with the past parent time
 		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
 		self.assertIsNone(wa_row.scheduled_time)
+
+	def test_validate_accepts_future_iso_offset_time(self) -> None:
+		"""Ensure Broadcast validation accepts a future schedule time with ISO offset.
+
+		Params: None.
+		Returns: None.
+		Raises: AssertionError if validation fails on future ISO offset time.
+		Side effects: Inserts test Broadcast in database.
+		"""
+		now = now_datetime()
+		future_time = add_to_date(now, days=2)
+		future_iso = future_time.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_PER_CHANNEL,
+			channels=[
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"scheduled_time": future_iso,
+				}
+			],
+		)
+		doc.reload()
+		self.assertIsNotNone(doc.channel_row(CHANNEL_WHATSAPP).scheduled_time)
+
+	def test_validate_rejects_past_iso_offset_time_without_typeerror(self) -> None:
+		"""Ensure Broadcast validation rejects past ISO offset time with ValidationError, not TypeError.
+
+		Params: None.
+		Returns: None.
+		Raises: AssertionError if TypeError is raised or ValidationError is not raised.
+		Side effects: None.
+		"""
+		now = now_datetime()
+		past_time = add_to_date(now, days=-2)
+		past_iso = past_time.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+
+		doc = frappe.get_doc(
+			{
+				"doctype": "Broadcast",
+				"title": f"ZZTestPastISO {frappe.generate_hash(length=6)}",
+				"recipient_source": "Individual",
+				"status": STATUS_DRAFT,
+				"schedule_mode": SCHEDULE_PER_CHANNEL,
+				"channels": [
+					{
+						"channel": CHANNEL_WHATSAPP,
+						"whatsapp_account": "WA-ACC-001",
+						"whatsapp_template": "tpl_wa_001",
+						"scheduled_time": past_iso,
+					}
+				],
+			}
+		)
+		doc.flags.ignore_links = True
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			doc.insert(ignore_permissions=True)
+		self.assertIn("cannot be in the past", str(ctx.exception))
