@@ -735,7 +735,7 @@ def get_validation_summary(audience: str) -> dict:
 		email[e] = email.get(e, 0) + 1
 
 	channels = {}
-	for label in ("WhatsApp", "SMS", "Email"):
+	for label in ("WhatsApp", "SMS", "Email", "AI Call"):
 		channels[label] = {
 			"reachable": len(doc.members_for(label)),
 			"reasons": doc.rejection_breakdown(label),

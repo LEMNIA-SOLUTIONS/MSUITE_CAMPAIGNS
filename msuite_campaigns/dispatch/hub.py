@@ -36,11 +36,7 @@ DEFAULT_WINDOW_DAYS = 30
 
 def available_channels() -> list[str]:
 	"""Channels installed on this site, in a stable order."""
-	return [
-		key
-		for key in ("whatsapp", "sms", "email")
-		if frappe.db.exists("DocType", materializer.CHANNEL_DOCTYPE[key])
-	]
+	return [key for key in ("whatsapp", "sms", "email", "ai_call") if materializer.is_offered(key)]
 
 
 def _authorize(payload: dict, channels: list[str]) -> None:
@@ -269,12 +265,19 @@ def _launch_one(channel: str, campaign: str, audience, payload: dict) -> dict:
 	config = dict((payload.get("channels") or {}).get(channel) or {})
 	config.setdefault("risk_policy", payload.get("risk_policy"))
 	config.setdefault("title", payload.get("campaign_name"))
+	if channel in materializer.ADAPTER_BUILT:
+		# The wizard's "send later" is the payload's start_date; the other engines take it
+		# from their own scheduled_time, an AI call broadcast from its start date.
+		config.setdefault("start_date", payload.get("start_date"))
 
 	savepoint = f"dispatch_{channel}"
 	frappe.db.savepoint(savepoint)
 	try:
 		result = materializer.build(channel, campaign, audience, config)
-		if result.get("name"):
+		if result.get("name") and channel in materializer.ADAPTER_BUILT:
+			# Started, not submitted: the channel app launches its own blast.
+			result["status"] = materializer.channel_adapter(channel)["launch"](result["name"], config)
+		elif result.get("name"):
 			doc = frappe.get_doc(materializer.CHANNEL_DOCTYPE[channel], result["name"])
 			# perm: authorised in _authorize
 			doc.flags.ignore_permissions = True
@@ -316,6 +319,7 @@ _REQUIRED_CONFIG = {
 	"whatsapp": (("template", "a WhatsApp template"),),
 	"email": (("template", "an email template"), ("account", "a sender email account")),
 	"sms": (("template", "an SMS template"), ("account", "an SMS account")),
+	"ai_call": (("assistant", "an assistant"), ("phone_number", "a number to call from")),
 }
 
 
@@ -468,10 +472,22 @@ def retry_campaign(campaign: str) -> dict:
 		("whatsapp", mc.whatsapp_blast, "Bulk WhatsApp Message"),
 		("email", mc.email_blast, "Bulk Email Message"),
 		("sms", mc.sms_blast, "Bulk SMS Message"),
+		("ai_call", mc.get("ai_call_blast"), materializer.CHANNEL_DOCTYPE["ai_call"]),
 	]
 
 	for ch_key, blast_name, doctype in linked:
 		if not blast_name or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, blast_name):
+			continue
+		if ch_key in materializer.ADAPTER_BUILT:
+			# Never submitted, so the docstatus branches below do not apply: the adapter's
+			# run starts it if it is not already running and skips it otherwise.
+			try:
+				res = materializer.channel_adapter(ch_key)["run"](blast_name)
+			except Exception as e:
+				frappe.log_error(title=f"Retry failed for {ch_key} ({blast_name})", message=frappe.get_traceback())
+				res = {"outcome": "failed", "message": str(e)[:300]}
+			out[ch_key] = {"outcome": res.get("outcome"), "error": res.get("message") if res.get("outcome") == "failed" else None,
+						   "status": frappe.db.get_value(doctype, blast_name, "status")}
 			continue
 		try:
 			doc = frappe.get_doc(doctype, blast_name)

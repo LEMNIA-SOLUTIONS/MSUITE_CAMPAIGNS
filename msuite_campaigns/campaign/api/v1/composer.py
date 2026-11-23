@@ -122,7 +122,7 @@ def list_channels(campaign: str = "") -> dict:
 		None (read-only query).
 	"""
 	if not campaign:
-		return {"social": [], "ads": [], "whatsapp": []}
+		return {"social": [], "ads": [], "whatsapp": [], "ai_call": []}
 
 	if not frappe.has_permission("Marketing Campaign", "read", doc=campaign):
 		frappe.throw(
@@ -366,7 +366,28 @@ def list_channels(campaign: str = "") -> dict:
 				}
 			)
 
-	return {"social": social, "ads": ads, "whatsapp": whatsapp}
+	return {"social": social, "ads": ads, "whatsapp": whatsapp, "ai_call": _ai_call_rows(campaign)}
+
+
+def _ai_call_rows(campaign: str) -> list[dict]:
+	"""AI call broadcasts in this campaign, from the channel's own adapter (ai_calling), so
+	this module never reads that app's doctypes. Empty when AI Calling is not installed."""
+	from msuite_campaigns.campaign.services.relationships import get_adapters
+
+	adapter = get_adapters().get("ai_call")
+	if not adapter:
+		return []
+	return [
+		{
+			"name": r.get("name"),
+			"title": r.get("title") or "",
+			"status": r.get("status") or "Draft",
+			"recipients_count": r.get("recipients") or 0,
+			"ready": bool(r.get("ready")),
+			"reason": r.get("reason") or "",
+		}
+		for r in adapter["preview"](campaign)
+	]
 
 
 @frappe.whitelist()
@@ -994,6 +1015,12 @@ def delete_campaign(name: str, cascade: int = 0) -> dict:
 			for b in broadcasts:
 				frappe.delete_doc("Broadcast", b, ignore_permissions=True, force=True)
 
+	# AI call broadcasts are never deleted with the campaign: they hold call recordings,
+	# transcripts and outcomes, and a running one must be stopped first. They are detached
+	# instead (cascade or not), and stay under AI Calling, Broadcasts.
+	if frappe.db.exists("DocType", "AI Calling Broadcast") and frappe.get_meta("AI Calling Broadcast").has_field("campaign"):
+		frappe.db.set_value("AI Calling Broadcast", {"campaign": name}, "campaign", None, update_modified=False)
+
 	# Delete parent campaign itself
 	frappe.delete_doc("Marketing Campaign", name, ignore_permissions=True, force=True)
 	frappe.db.commit()
@@ -1007,6 +1034,7 @@ def _get_relationship_counts(campaign_name: str) -> dict:
 	email_campaigns = 0
 	whatsapp_blasts = 0
 	broadcasts = 0
+	ai_call_broadcasts = 0
 
 	if frappe.db.exists("DocType", "Social Post"):
 		posts = frappe.get_all("Social Post", filters={"campaign": campaign_name}, pluck="name")
@@ -1026,6 +1054,8 @@ def _get_relationship_counts(campaign_name: str) -> dict:
 
 	if frappe.db.exists("DocType", "Broadcast"):
 		broadcasts = frappe.db.count("Broadcast", {"campaign": campaign_name})
+	if frappe.db.exists("DocType", "AI Calling Broadcast") and frappe.get_meta("AI Calling Broadcast").has_field("campaign"):
+		ai_call_broadcasts = frappe.db.count("AI Calling Broadcast", {"campaign": campaign_name})
 
 	return {
 		"social_posts": social_posts,
@@ -1033,6 +1063,7 @@ def _get_relationship_counts(campaign_name: str) -> dict:
 		"email_campaigns": email_campaigns,
 		"whatsapp_blasts": whatsapp_blasts,
 		"broadcasts": broadcasts,
+		"ai_call_broadcasts": ai_call_broadcasts,
 	}
 
 
