@@ -260,7 +260,7 @@ def launch(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	"""Launch a Broadcast or a specific channel on a Broadcast.
 
 	FIRST calls plan_enforcer.check_broadcast_launch(doc) to enforce quotas per channel row.
-	For rows in Draft/Scheduled, transitions them to Scheduled if doc.scheduled_time is in the
+	For rows in Draft/Scheduled, transitions each row to Scheduled if doc.effective_time(row) is in the
 	future, else Queued. Rows already Queued, In Progress, or Scheduled (when target is Scheduled)
 	are a silent no-op (idempotent double launch). Terminal rows and others are skipped.
 
@@ -287,11 +287,12 @@ def launch(broadcast: str, channel: str | None = None) -> dict[str, str]:
 
 	check_broadcast_launch(doc)
 
-	is_future = bool(doc.scheduled_time and get_datetime(doc.scheduled_time) > now_datetime())
-	target_status = "Scheduled" if is_future else "Queued"
-
 	transitions: list[tuple[Any, str]] = []
 	for row in target_rows:
+		eff_time = doc.effective_time(row)
+		is_future = bool(eff_time and eff_time > now_datetime())
+		target_status = "Scheduled" if is_future else "Queued"
+
 		if row.status in ("Draft", "Scheduled"):
 			if row.status == target_status:
 				continue  # silent no-op (e.g. already Scheduled and still future)
