@@ -124,6 +124,8 @@ The architecture consists of six doctypes:
 - Validation (`Broadcast.validate`): in `Same for all channels` mode no row may carry a time; in `Per channel` mode a Draft or Scheduled row's time cannot be in the past (the error names the channel); a launched row's time cannot change and a launched row cannot be removed; at least one channel row stays.
 - Switching mode on a saved Broadcast: Per channel to Same clears row times; Same to Per channel seeds empty row times from the parent time.
 - `clone_broadcast` keeps `schedule_mode` and copies times only while they are still in the future.
+- `save_broadcast` on an existing Broadcast edits rows in place, matched by channel: Draft and Scheduled rows take the new values and keep their status; a launched row is kept exactly as stored (payload values for it are ignored) and cannot be omitted; channels not yet on the Broadcast are added as Draft; omitted Draft or Scheduled rows are removed.
+- Schedule times given with a time zone offset (for example `...T10:00:00+05:30` or `...Z`) are converted to the site time zone before any comparison (`broadcast/schedule_time.py::to_site_datetime`).
 
 #### Lifecycle and Transitions
 
