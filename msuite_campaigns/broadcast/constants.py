@@ -122,6 +122,11 @@ MIGRATION_VERIFY_CHUNK: int = 1000
 LEGACY_LIST_DOCTYPES: tuple[str, ...] = (AUDIENCE_DOCTYPE, "WhatsApp Recipient List", "Email Recipient List")
 LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = (BULK_WHATSAPP_MESSAGE_DOCTYPE, BULK_EMAIL_MESSAGE_DOCTYPE, BULK_SMS_MESSAGE_DOCTYPE)
 
+# Schedule modes
+SCHEDULE_SAME: str = "Same for all channels"
+SCHEDULE_PER_CHANNEL: str = "Per channel"
+SCHEDULE_MODES: tuple[str, ...] = (SCHEDULE_SAME, SCHEDULE_PER_CHANNEL)
+
 # Whitelists for save_broadcast to prevent mass-assignment vulnerabilities
 WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
 	"title",
@@ -130,6 +135,7 @@ WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
 	"recipient_source",
 	"recipient_list",
 	"scheduled_time",
+	"schedule_mode",
 )
 
 WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
@@ -137,6 +143,7 @@ WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
 	"delivery_engine",
 	"use_batched_enqueue",
 	"template_variables",
+	"scheduled_time",
 	"whatsapp_account",
 	"whatsapp_template",
 	"variable_type",

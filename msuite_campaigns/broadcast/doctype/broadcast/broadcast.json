@@ -13,6 +13,7 @@
   "recipient_source",
   "recipient_list",
   "section_schedule",
+  "schedule_mode",
   "scheduled_time",
   "launched_at",
   "column_break_schedule",
@@ -76,6 +77,13 @@
    "fieldname": "section_schedule",
    "fieldtype": "Section Break",
    "label": "Schedule & Lifecycle"
+  },
+  {
+   "default": "Same for all channels",
+   "fieldname": "schedule_mode",
+   "fieldtype": "Select",
+   "label": "Schedule Mode",
+   "options": "Same for all channels\nPer channel"
   },
   {
    "fieldname": "scheduled_time",
