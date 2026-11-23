@@ -11,6 +11,8 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_to_date, now_datetime
 
+from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL, SCHEDULE_SAME
+from msuite_campaigns.broadcast.lifecycle import rollup_status
 from msuite_campaigns.broadcast.scheduler import start_due_channels
 
 TEST_PREFIX = "ZZTestBS "
@@ -60,26 +62,59 @@ class TestBroadcastScheduler(IntegrationTestCase):
 		channel_status: str = "Scheduled",
 		scheduled_time=None,
 		campaign: str | None = None,
+		channels: list[dict] | None = None,
+		schedule_mode: str = SCHEDULE_SAME,
 	) -> "frappe.model.document.Document":
+		"""Helper to construct and insert a Broadcast document.
+
+		Params:
+			channel: Default channel name when channels list is omitted.
+			status: Overall Broadcast status.
+			channel_status: Default channel row status when channels list is omitted.
+			scheduled_time: Optional datetime override.
+			campaign: Optional linked Marketing Campaign.
+			channels: Optional custom channel row specifications.
+			schedule_mode: Broadcast schedule mode ("Same for all channels" or "Per channel").
+
+		Returns:
+			frappe.model.document.Document: Inserted Broadcast document.
+
+		Raises:
+			frappe.ValidationError: If validation fails.
+
+		Side effects:
+			Inserts documents and commits transaction.
+		"""
 		future_time = add_to_date(now_datetime(), hours=2)
+		if channels is None:
+			channels_data = [
+				{
+					"channel": channel,
+					"status": channel_status,
+					"whatsapp_account": "WA-ACC-001" if channel == "WhatsApp" else None,
+					"whatsapp_template": "tpl_wa_001" if channel == "WhatsApp" else None,
+				}
+			]
+		else:
+			channels_data = channels
+
+		for ch in channels_data:
+			if ch.get("channel") != "WhatsApp":
+				ch.setdefault("variable_type", "")
+
 		doc = frappe.get_doc(
 			{
 				"doctype": "Broadcast",
 				"title": f"{TEST_PREFIX}{frappe.generate_hash(length=6)}",
 				"recipient_source": "Individual",
 				"status": status,
+				"schedule_mode": schedule_mode,
 				"scheduled_time": future_time if scheduled_time else None,
 				"campaign": campaign,
-				"channels": [
-					{
-						"channel": channel,
-						"status": channel_status,
-						"whatsapp_account": "WA-ACC-001" if channel == "WhatsApp" else None,
-						"whatsapp_template": "tpl_wa_001" if channel == "WhatsApp" else None,
-					}
-				],
+				"channels": channels_data,
 			}
 		)
+		doc.flags.ignore_permissions = True
 		doc.insert(ignore_links=True)
 		if scheduled_time:
 			frappe.db.set_value("Broadcast", doc.name, "scheduled_time", scheduled_time, update_modified=False)
@@ -216,8 +251,7 @@ class TestBroadcastScheduler(IntegrationTestCase):
 		b2 = self._make_broadcast(scheduled_time=due2)
 		b3 = self._make_broadcast(scheduled_time=due3)
 
-		with patch("msuite_campaigns.broadcast.constants.SCHEDULER_BATCH_LIMIT", 2), \
-			patch("msuite_campaigns.broadcast.scheduler.SCHEDULER_BATCH_LIMIT", 2, create=True), \
+		with patch("msuite_campaigns.broadcast.scheduler.SCHEDULER_BATCH_LIMIT", 2), \
 			patch("msuite_campaigns.broadcast.hub.start_channel"):
 			first_run = start_due_channels()
 			b3_status = frappe.db.get_value("Broadcast Channel", {"parent": b3.name, "channel": "WhatsApp"}, "status")
@@ -273,4 +307,78 @@ class TestBroadcastScheduler(IntegrationTestCase):
 			self.assertEqual(started, 0)
 			mock_log.assert_not_called()
 			spy_rollback.assert_called()
+
+	def test_failed_start_keeps_parent_rollup_status(self):
+		"""Per-channel broadcast with WhatsApp (due, fails start) and Email (Completed): parent keeps rollup status."""
+		now = now_datetime()
+		due_time = add_to_date(now, minutes=-10)
+		future_time = add_to_date(now, hours=2)
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_PER_CHANNEL,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"status": "Scheduled",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"scheduled_time": future_time,
+				},
+				{
+					"channel": "Email",
+					"status": "Completed",
+					"email_account": "mail@test.com",
+					"email_template": "tpl_email_001",
+					"variable_type": "",
+				},
+			],
+		)
+		wa_row = doc.channel_row("WhatsApp")
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "scheduled_time", due_time, update_modified=False)
+		frappe.db.set_value("Broadcast", doc.name, "scheduled_time", due_time, update_modified=False)
+		frappe.db.commit()
+
+		def fake_start(broadcast, channel):
+			if broadcast == doc.name and channel == "WhatsApp":
+				raise RuntimeError("Simulated WhatsApp dispatch failure")
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start), \
+			patch("frappe.log_error"):
+			started_count = start_due_channels()
+
+		self.assertEqual(started_count, 0)
+
+		doc.reload()
+		wa_row_after = doc.channel_row("WhatsApp")
+		self.assertEqual(wa_row_after.status, "Failed")
+		self.assertIn("Simulated WhatsApp dispatch failure", wa_row_after.launch_error)
+
+		expected_parent_status = rollup_status(doc)
+		self.assertEqual(expected_parent_status, "Partially Failed")
+		self.assertEqual(doc.status, "Partially Failed")
+		self.assertEqual(doc.status, expected_parent_status)
+		self.assertIn("Simulated WhatsApp dispatch failure", doc.launch_error)
+
+	def test_failed_start_of_only_channel_marks_parent_failed(self):
+		"""Broadcast with a single channel that fails dispatch marks parent status as Failed."""
+		now = now_datetime()
+		due_time = add_to_date(now, minutes=-5)
+		doc = self._make_broadcast(scheduled_time=due_time)
+
+		def fake_start(broadcast, channel):
+			if broadcast == doc.name:
+				raise RuntimeError("Single channel launch failure")
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start), \
+			patch("frappe.log_error"):
+			started_count = start_due_channels()
+
+		self.assertEqual(started_count, 0)
+
+		doc.reload()
+		wa_row = doc.channel_row("WhatsApp")
+		self.assertEqual(wa_row.status, "Failed")
+		self.assertIn("Single channel launch failure", wa_row.launch_error)
+		self.assertEqual(doc.status, "Failed")
+		self.assertIn("Single channel launch failure", doc.launch_error)
 

@@ -9,14 +9,12 @@ linked campaign is active or empty, moving them to Queued and initiating dispatc
 
 from __future__ import annotations
 
-import sys
-
 import frappe
 from frappe.utils import now_datetime
 
-from msuite_campaigns.broadcast import constants
 from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL, SCHEDULER_BATCH_LIMIT
-from msuite_campaigns.broadcast.lifecycle import transition_channel
+from msuite_campaigns.broadcast.hub import MAX_LAUNCH_ERROR_LENGTH
+from msuite_campaigns.broadcast.lifecycle import rollup_status, transition_channel
 from msuite_campaigns.campaign.services.relationships import is_campaign_active
 
 
@@ -36,6 +34,9 @@ def start_due_channels() -> int:
 	Failure in one row is rolled back and logged via frappe.log_error without
 	preventing remaining rows from starting. Successfully started rows are committed.
 
+	Params:
+		None.
+
 	Returns:
 		int: Number of channel rows successfully started.
 
@@ -50,10 +51,7 @@ def start_due_channels() -> int:
 		Logs errors to tabError Log if individual channel dispatch fails.
 	"""
 	now = now_datetime()
-	limit = getattr(constants, "SCHEDULER_BATCH_LIMIT", SCHEDULER_BATCH_LIMIT)
-	curr_mod = sys.modules.get(__name__)
-	if curr_mod and hasattr(curr_mod, "SCHEDULER_BATCH_LIMIT"):
-		limit = curr_mod.SCHEDULER_BATCH_LIMIT
+	limit = SCHEDULER_BATCH_LIMIT
 
 	candidate_rows = frappe.db.sql(
 		"""
@@ -132,10 +130,12 @@ def start_due_channels() -> int:
 				message=frappe.get_traceback() if hasattr(frappe, "get_traceback") else str(exc),
 			)
 			try:
-				err_msg = str(exc)[:140]
+				err_msg = str(exc)[:MAX_LAUNCH_ERROR_LENGTH]
 				frappe.db.set_value("Broadcast Channel", row.channel_row_name, "status", "Failed", update_modified=False)
 				frappe.db.set_value("Broadcast Channel", row.channel_row_name, "launch_error", err_msg, update_modified=False)
-				frappe.db.set_value("Broadcast", row.broadcast, "status", "Failed", update_modified=False)
+				parent_doc = frappe.get_doc("Broadcast", row.broadcast)
+				parent_status = rollup_status(parent_doc)
+				frappe.db.set_value("Broadcast", row.broadcast, "status", parent_status, update_modified=False)
 				frappe.db.set_value("Broadcast", row.broadcast, "launch_error", err_msg, update_modified=False)
 				frappe.db.commit()
 			except Exception:
