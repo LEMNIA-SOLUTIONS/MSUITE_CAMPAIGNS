@@ -90,8 +90,10 @@ class Broadcast(Document):
 	def _handle_schedule_mode_switch(self) -> None:
 		"""Handle schedule mode switch between Same and Per channel.
 
-		Switching Per channel -> Same clears row scheduled times.
-		Switching Same -> Per channel seeds row scheduled times from parent scheduled_time.
+		Switching Per channel -> Same clears row scheduled times on Draft and Scheduled rows.
+		Switching Same -> Per channel seeds row scheduled times from parent scheduled_time
+		only when parent scheduled_time is strictly in the future.
+		Locked rows (not Draft or Scheduled) are never mutated.
 
 		Raises:
 			None.
@@ -115,11 +117,22 @@ class Broadcast(Document):
 		if prev_mode != curr_mode:
 			if curr_mode == SCHEDULE_SAME:
 				for row in self.channels or []:
-					row.scheduled_time = None
+					status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
+					if status in (STATUS_DRAFT, STATUS_SCHEDULED, None):
+						row.scheduled_time = None
 			elif curr_mode == SCHEDULE_PER_CHANNEL:
+				is_parent_future = False
+				if self.scheduled_time:
+					st_dt = get_datetime(self.scheduled_time)
+					if st_dt and st_dt > now_datetime():
+						is_parent_future = True
+
 				for row in self.channels or []:
-					if not row.scheduled_time:
-						row.scheduled_time = self.scheduled_time
+					status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
+					if status in (STATUS_DRAFT, STATUS_SCHEDULED, None):
+						st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
+						if not st and is_parent_future:
+							row.scheduled_time = self.scheduled_time
 
 	def _derive_parent_scheduled_time(self) -> None:
 		"""Derive parent scheduled_time in Per channel mode from earliest row time.
@@ -367,6 +380,9 @@ class Broadcast(Document):
 
 		if mode == SCHEDULE_SAME:
 			for row in self.channels or []:
+				status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
+				if status not in (STATUS_DRAFT, STATUS_SCHEDULED, None):
+					continue
 				st = row.get("scheduled_time") if isinstance(row, dict) else getattr(row, "scheduled_time", None)
 				if st:
 					channel = row.get("channel") if isinstance(row, dict) else getattr(row, "channel", None)

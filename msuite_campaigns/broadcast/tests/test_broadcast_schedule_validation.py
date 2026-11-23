@@ -427,3 +427,82 @@ class TestBroadcastScheduleValidation(IntegrationTestCase):
 		self.assertEqual(doc.effective_time(sms_row), get_datetime(time_sms))
 
 		self.assertEqual(get_datetime(doc.scheduled_time), get_datetime(time_wa))
+
+	def test_mode_switch_does_not_touch_locked_rows(self) -> None:
+		"""Ensure switching schedule_mode does not mutate scheduled_time on locked rows.
+
+		Params: None.
+		Returns: None.
+		Raises: AssertionError if locked row scheduled_time is mutated.
+		Side effects: Inserts and updates Broadcast and child rows.
+		"""
+		now = now_datetime()
+		future_time_1 = add_to_date(now, hours=2)
+		future_time_2 = add_to_date(now, hours=4)
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_PER_CHANNEL,
+			channels=[
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"scheduled_time": future_time_1,
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": "EM-ACC-001",
+					"email_template": "tpl_em_001",
+					"scheduled_time": future_time_2,
+				},
+			],
+		)
+		# Set WhatsApp to Completed
+		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "status", STATUS_COMPLETED)
+		doc.reload()
+
+		# Switch Per channel -> Same for all channels
+		doc.schedule_mode = SCHEDULE_SAME
+		doc.save(ignore_permissions=True)
+		doc.reload()
+
+		# Locked WhatsApp row must NOT have its scheduled_time cleared
+		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
+		em_row = doc.channel_row(CHANNEL_EMAIL)
+		self.assertEqual(get_datetime(wa_row.scheduled_time), get_datetime(future_time_1))
+		self.assertIsNone(em_row.scheduled_time)
+
+	def test_mode_switch_does_not_seed_past_parent_time(self) -> None:
+		"""Ensure Same -> Per channel mode switch does not seed past parent scheduled_time.
+
+		Params: None.
+		Returns: None.
+		Raises: AssertionError if row scheduled_time is seeded from past parent time.
+		Side effects: Inserts and updates Broadcast and child rows.
+		"""
+		now = now_datetime()
+		past_time = add_to_date(now, hours=-2)
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_SAME,
+			channels=[
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+				}
+			],
+		)
+		# Set past parent scheduled_time directly via db.set_value
+		frappe.db.set_value("Broadcast", doc.name, "scheduled_time", past_time)
+		doc.reload()
+
+		# Switch Same -> Per channel
+		doc.schedule_mode = SCHEDULE_PER_CHANNEL
+		doc.save(ignore_permissions=True)
+		doc.reload()
+
+		# WhatsApp row must NOT be seeded with the past parent time
+		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
+		self.assertIsNone(wa_row.scheduled_time)
