@@ -44,6 +44,7 @@ from msuite_campaigns.broadcast.constants import (
 	STATUS_QUEUED,
 	STATUS_SCHEDULED,
 )
+from msuite_campaigns.tests._legacy import skip_without_legacy_doctypes
 from msuite_core.services.permissions.roles import WA_USER
 
 TEST_PREFIX = "ZZTestE2E_"
@@ -159,7 +160,7 @@ class TestBroadcastE2E(IntegrationTestCase):
 				frappe.delete_doc("User", email, force=True, ignore_permissions=True)
 
 		self._purge_all_test_data()
-		frappe.db.rollback()
+		frappe.db.commit()
 		super().tearDown()
 
 	@classmethod
@@ -180,10 +181,14 @@ class TestBroadcastE2E(IntegrationTestCase):
 				f"DELETE FROM `tabRecipient Contact` WHERE parent IN (SELECT name FROM `tabRecipient List` WHERE list_name LIKE '{TEST_PREFIX}%')"
 			)
 			frappe.db.sql(f"DELETE FROM `tabRecipient List` WHERE list_name LIKE '{TEST_PREFIX}%'")
-			frappe.db.sql(
-				f"DELETE FROM `tabWhatsApp Recipient` WHERE parent IN (SELECT name FROM `tabBulk WhatsApp Message` WHERE title LIKE '{TEST_PREFIX}%')"
-			)
-			frappe.db.sql(f"DELETE FROM `tabBulk WhatsApp Message` WHERE title LIKE '{TEST_PREFIX}%'")
+			try:
+				skip_without_legacy_doctypes()
+				frappe.db.sql(
+					f"DELETE FROM `tabWhatsApp Recipient` WHERE parent IN (SELECT name FROM `tabBulk WhatsApp Message` WHERE title LIKE '{TEST_PREFIX}%')"
+				)
+				frappe.db.sql(f"DELETE FROM `tabBulk WhatsApp Message` WHERE title LIKE '{TEST_PREFIX}%'")
+			except unittest.SkipTest:
+				pass
 			frappe.db.sql(f"DELETE FROM `tabMarketing Campaign` WHERE campaign_name LIKE '{TEST_PREFIX}%'")
 			frappe.db.commit()
 		except Exception:
@@ -1050,6 +1055,7 @@ class TestBroadcastE2E(IntegrationTestCase):
 		recipients copied, old doc untouched; legacy.resolve returns new name;
 		second run creates nothing.
 		"""
+		skip_without_legacy_doctypes()
 		bw = frappe.get_doc({
 			"doctype": "Bulk WhatsApp Message",
 			"title": f"{TEST_PREFIX}LegacyBW_{frappe.generate_hash(length=6)}",

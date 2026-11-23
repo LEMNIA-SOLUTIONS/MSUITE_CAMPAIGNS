@@ -13,10 +13,16 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from msuite_campaigns.broadcast import migration
+from msuite_campaigns.tests._legacy import skip_without_legacy_doctypes
 
 
 class TestBroadcastMigration(IntegrationTestCase):
 	"""Test migration logic, status mapping, idempotency, edge cases and verification."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		skip_without_legacy_doctypes()
 
 	def setUp(self):
 		super().setUp()
