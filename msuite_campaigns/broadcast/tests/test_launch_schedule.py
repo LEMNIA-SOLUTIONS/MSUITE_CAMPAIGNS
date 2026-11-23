@@ -492,6 +492,61 @@ class TestLaunchSchedule(IntegrationTestCase):
 			STATUS_QUEUED,
 		)
 
+	def test_scheduler_scheduled_row_with_null_time_is_not_started(self) -> None:
+		"""Test scheduler does not start a Scheduled Per-channel row with NULL scheduled_time.
+
+		Even if parent Broadcast has a past scheduled_time, Decision D2 dictates
+		that in Per-channel mode the row's scheduled_time is used without fallback to parent time.
+
+		Params:
+			None.
+
+		Returns:
+			None.
+
+		Raises:
+			AssertionError: If a Scheduled row with NULL scheduled_time is started.
+
+		Side effects:
+			Inserts Broadcast and child rows.
+		"""
+		now = now_datetime()
+		past_time = add_to_date(now, minutes=-15)
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_PER_CHANNEL,
+			status=STATUS_DRAFT,
+			channels=[
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"scheduled_time": None,
+					"status": STATUS_DRAFT,
+				}
+			],
+		)
+		# Set parent scheduled_time to past and status to Scheduled directly via db.set_value
+		frappe.db.set_value("Broadcast", doc.name, "scheduled_time", past_time)
+		frappe.db.set_value("Broadcast", doc.name, "status", STATUS_SCHEDULED)
+		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "scheduled_time", None)
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "status", STATUS_SCHEDULED)
+
+		started_calls: list[tuple[str, str]] = []
+
+		def fake_start_channel(broadcast_name: str, channel_name: str) -> None:
+			started_calls.append((broadcast_name, channel_name))
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start_channel):
+			start_due_channels()
+
+		started_this_broadcast = [call for call in started_calls if call[0] == doc.name]
+		self.assertEqual(len(started_this_broadcast), 0)
+
+		doc.reload()
+		self.assertEqual(doc.channel_row(CHANNEL_WHATSAPP).status, STATUS_SCHEDULED)
+
 	def test_scheduler_racing_manual_launch_is_silent_noop(self) -> None:
 		"""Test scheduler racing manual launch is a silent no-op without duplicate dispatch.
 
@@ -526,23 +581,33 @@ class TestLaunchSchedule(IntegrationTestCase):
 		)
 		wa_row = doc.channel_row(CHANNEL_WHATSAPP)
 		frappe.db.set_value("Broadcast Channel", wa_row.name, "scheduled_time", past_time)
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "status", STATUS_SCHEDULED)
 		frappe.db.set_value("Broadcast", doc.name, "scheduled_time", past_time)
-
-		# Simulate manual launch racing: manual launch already moved row to Queued before scheduler processes it
-		frappe.db.set_value("Broadcast Channel", wa_row.name, "status", STATUS_QUEUED)
-		frappe.db.set_value("Broadcast", doc.name, "status", STATUS_QUEUED)
+		frappe.db.set_value("Broadcast", doc.name, "status", STATUS_SCHEDULED)
 
 		started_calls: list[tuple[str, str]] = []
 
 		def fake_start_channel(broadcast_name: str, channel_name: str) -> None:
 			started_calls.append((broadcast_name, channel_name))
 
-		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start_channel):
-			with patch("frappe.log_error") as mock_log:
-				count = start_due_channels()
-				# Must NOT have logged an error for this broadcast
-				error_calls = [c for c in mock_log.call_args_list if doc.name in str(c)]
-				self.assertEqual(len(error_calls), 0)
+		def fake_transition_channel(broadcast_name: str, channel_name: str, to_status: str) -> None:
+			if broadcast_name == doc.name:
+				# Simulate manual launch winning the race by moving row to Queued in DB
+				frappe.db.set_value("Broadcast Channel", wa_row.name, "status", STATUS_QUEUED)
+				frappe.db.set_value("Broadcast", doc.name, "status", STATUS_QUEUED)
+				frappe.throw(
+					f"Cannot move {channel_name} from Queued to Queued",
+					frappe.ValidationError,
+				)
+
+		with patch("msuite_campaigns.broadcast.scheduler.transition_channel", side_effect=fake_transition_channel):
+			with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start_channel):
+				with patch("frappe.log_error") as mock_log:
+					count = start_due_channels()
+					# Must NOT have logged an error for this broadcast
+					error_calls = [c for c in mock_log.call_args_list if doc.name in str(c)]
+					self.assertEqual(len(error_calls), 0)
+					self.assertEqual(count, 0)
 
 		# Must NOT have started this broadcast row again
 		started_this_broadcast = [call for call in started_calls if call[0] == doc.name]

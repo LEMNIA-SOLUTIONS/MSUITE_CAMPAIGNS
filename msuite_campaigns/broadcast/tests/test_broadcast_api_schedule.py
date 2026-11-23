@@ -723,7 +723,10 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 			self.assertEqual(r.status, STATUS_DRAFT)
 
 	def test_clone_with_future_row_times_keeps_them(self) -> None:
-		"""Validate that clone_broadcast preserves future row times in Per channel mode.
+		"""Validate that clone_broadcast preserves future row times and parent times.
+
+		In Per channel mode, future row times are preserved.
+		In Same mode, future parent scheduled_time is preserved.
 
 		Params:
 			None.
@@ -732,12 +735,77 @@ class TestBroadcastApiSchedule(IntegrationTestCase):
 			None.
 
 		Raises:
-			AssertionError: If future row times are lost during cloning.
+			AssertionError: If future row times or parent times are lost during cloning.
 
 		Side effects:
 			Inserts and clones Broadcast records.
 		"""
-		self.test_clone_broadcast_copies_mode_and_times()
+		now = now_datetime()
+		future_wa = add_to_date(now, hours=2)
+		future_em = add_to_date(now, hours=5)
+
+		# 1. Per channel mode
+		payload_per_ch = {
+			"title": f"{TEST_PREFIX}CloneFuturePerCh",
+			"schedule_mode": SCHEDULE_PER_CHANNEL,
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+					"scheduled_time": str(future_wa),
+				},
+				{
+					"channel": CHANNEL_EMAIL,
+					"email_account": self.email_account,
+					"email_template": self.email_template,
+					"scheduled_time": str(future_em),
+				},
+			],
+		}
+		res_per = save_broadcast(doc=json.dumps(payload_per_ch))
+		b_per = res_per["name"]
+		self.cleanup_broadcasts.append(b_per)
+
+		cloned_per = clone_broadcast(b_per)
+		self.cleanup_broadcasts.append(cloned_per["name"])
+		self.assertEqual(cloned_per["status"], STATUS_DRAFT)
+		self.assertEqual(cloned_per["schedule_mode"], SCHEDULE_PER_CHANNEL)
+		cloned_per_doc = frappe.get_doc("Broadcast", cloned_per["name"])
+		cloned_wa = cloned_per_doc.channel_row(CHANNEL_WHATSAPP)
+		cloned_em = cloned_per_doc.channel_row(CHANNEL_EMAIL)
+		self.assertEqual(cloned_wa.status, STATUS_DRAFT)
+		self.assertEqual(cloned_em.status, STATUS_DRAFT)
+		self.assertEqual(get_datetime(cloned_wa.scheduled_time), get_datetime(future_wa))
+		self.assertEqual(get_datetime(cloned_em.scheduled_time), get_datetime(future_em))
+
+		# 2. Same mode
+		payload_same = {
+			"title": f"{TEST_PREFIX}CloneFutureSame",
+			"schedule_mode": SCHEDULE_SAME,
+			"scheduled_time": str(future_wa),
+			"recipient_source": "Individual",
+			"channels": [
+				{
+					"channel": CHANNEL_WHATSAPP,
+					"whatsapp_account": self.wa_account,
+					"whatsapp_template": self.wa_template,
+				},
+			],
+		}
+		res_same = save_broadcast(doc=json.dumps(payload_same))
+		b_same = res_same["name"]
+		self.cleanup_broadcasts.append(b_same)
+
+		cloned_same = clone_broadcast(b_same)
+		self.cleanup_broadcasts.append(cloned_same["name"])
+		self.assertEqual(cloned_same["status"], STATUS_DRAFT)
+		self.assertEqual(cloned_same["schedule_mode"], SCHEDULE_SAME)
+		self.assertEqual(get_datetime(cloned_same["scheduled_time"]), get_datetime(future_wa))
+		cloned_same_doc = frappe.get_doc("Broadcast", cloned_same["name"])
+		self.assertEqual(get_datetime(cloned_same_doc.scheduled_time), get_datetime(future_wa))
+		self.assertIsNone(cloned_same_doc.channel_row(CHANNEL_WHATSAPP).scheduled_time)
 
 	def test_clone_same_mode_with_past_parent_time_clears_it(self) -> None:
 		"""Validate that clone_broadcast clears past parent scheduled_time in Same for all channels mode.

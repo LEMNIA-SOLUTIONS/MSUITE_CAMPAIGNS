@@ -21,9 +21,8 @@ def start_due_channels() -> int:
 	"""Scan for due Scheduled channel rows, move them to Queued, and start them.
 
 	Finds channel rows with status 'Scheduled' whose effective scheduled_time <= now
-	(using COALESCE(NULLIF(bc.scheduled_time, ''), b.scheduled_time) when mode is
-	'Per channel', parent scheduled_time otherwise) and whose campaign is empty or active
-	(via is_campaign_active).
+	(using bc.scheduled_time when mode is 'Per channel', parent scheduled_time otherwise)
+	and whose campaign is empty or active (via is_campaign_active).
 
 	Transitions each matching row to Queued via lifecycle.transition_channel
 	and starts dispatch via hub.start_channel.
@@ -53,7 +52,7 @@ def start_due_channels() -> int:
 			bc.parent AS broadcast,
 			b.campaign AS campaign,
 			CASE
-				WHEN b.schedule_mode = %(mode_per_channel)s THEN COALESCE(NULLIF(bc.scheduled_time, ''), b.scheduled_time)
+				WHEN b.schedule_mode = %(mode_per_channel)s THEN bc.scheduled_time
 				ELSE b.scheduled_time
 			END AS scheduled_time
 		FROM `tabBroadcast Channel` bc
@@ -61,13 +60,13 @@ def start_due_channels() -> int:
 		WHERE bc.status = 'Scheduled'
 		  AND (
 				CASE
-					WHEN b.schedule_mode = %(mode_per_channel)s THEN COALESCE(NULLIF(bc.scheduled_time, ''), b.scheduled_time)
+					WHEN b.schedule_mode = %(mode_per_channel)s THEN bc.scheduled_time
 					ELSE b.scheduled_time
 				END
 		  ) IS NOT NULL
 		  AND (
 				CASE
-					WHEN b.schedule_mode = %(mode_per_channel)s THEN COALESCE(NULLIF(bc.scheduled_time, ''), b.scheduled_time)
+					WHEN b.schedule_mode = %(mode_per_channel)s THEN bc.scheduled_time
 					ELSE b.scheduled_time
 				END
 		  ) <= %(now)s

@@ -137,7 +137,6 @@ class TestScheduleSchema(IntegrationTestCase):
 		# Simulate legacy or unpopulated records
 		frappe.db.sql("UPDATE `tabBroadcast` SET schedule_mode = '' WHERE name = %s", (b1.name,))
 		frappe.db.sql("UPDATE `tabBroadcast` SET schedule_mode = %s WHERE name = %s", (SCHEDULE_PER_CHANNEL, b2.name))
-		frappe.db.commit()
 
 		self.assertEqual(frappe.db.get_value("Broadcast", b1.name, "schedule_mode"), "")
 		self.assertEqual(frappe.db.get_value("Broadcast", b2.name, "schedule_mode"), SCHEDULE_PER_CHANNEL)
