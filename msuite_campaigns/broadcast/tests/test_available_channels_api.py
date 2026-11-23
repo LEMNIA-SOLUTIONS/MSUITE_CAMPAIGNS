@@ -76,3 +76,8 @@ class TestAvailableChannelsByRole(IntegrationTestCase):
 
 	def test_ai_call_withheld_without_a_calling_role(self):
 		self.assertEqual(self._channels_for(["WhatsApp User"], calling_access=False), ["whatsapp"])
+
+	def test_adapter_names_match_case_insensitively(self):
+		frappe.set_user("Administrator")
+		with patch(ADAPTERS, return_value={"whatsapp": {}}), patch(CAMPAIGN_ADAPTERS, return_value={}):
+			self.assertEqual(broadcast_api.get_available_channels(), {"channels": ["whatsapp"]})

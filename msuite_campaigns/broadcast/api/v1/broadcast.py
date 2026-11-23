@@ -298,12 +298,12 @@ def get_available_channels() -> dict:
 	from msuite_campaigns.broadcast.adapters import get_channel_adapters
 	from msuite_campaigns.campaign.services import relationships
 
-	adapters = get_channel_adapters()
+	registered = {name.lower() for name in get_channel_adapters()}
 	can_create = frappe.has_permission("Broadcast", "create")
 	channels = [
 		c.lower()
 		for c in CHANNELS
-		if c in adapters and can_create and broadcast_has_permission({"channels": [{"channel": c}]}, "create")
+		if c.lower() in registered and can_create and broadcast_has_permission({"channels": [{"channel": c}]}, "create")
 	]
 	if relationships.get_adapters().get(AI_CALL_CHANNEL_KEY) and _can_use_ai_calling():
 		channels.append(AI_CALL_CHANNEL_KEY)
