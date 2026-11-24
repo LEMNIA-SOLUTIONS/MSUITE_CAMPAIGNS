@@ -338,7 +338,11 @@ def start_channel(broadcast: str, channel: str) -> None:
 		else:
 			from msuite_campaigns.broadcast.enqueue import enqueue_broadcast_channel
 
-			enqueue_broadcast_channel(broadcast, channel)
+			chunks = enqueue_broadcast_channel(broadcast, channel)
+			if chunks == 0:
+				from msuite_campaigns.broadcast.counters import refresh_counters
+
+				refresh_counters(broadcast, channel)
 	except Exception as exc:
 		err_msg = str(exc)[:MAX_LAUNCH_ERROR_LENGTH]
 		try:

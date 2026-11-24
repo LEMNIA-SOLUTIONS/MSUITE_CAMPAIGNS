@@ -183,6 +183,14 @@ DATE_RANGE_MONTH: str = "month"
 DATE_RANGE_QUARTER: str = "quarter"
 DATE_RANGE_CUSTOM: str = "custom"
 
+# Stale queue limits and messages
+STALE_QUEUED_MINUTES: int = 30
+ERROR_NO_RECIPIENTS_QUEUED: str = "No recipients were queued"
+
+# In-flight recipient statuses preventing completion
+PENDING_RECIPIENT_STATUSES: tuple[str, ...] = ("Queued", "Retrying", "Sending")
+
+
 
 
 

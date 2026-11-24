@@ -10,12 +10,93 @@ linked campaign is active or empty, moving them to Queued and initiating dispatc
 from __future__ import annotations
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import add_to_date, now_datetime
 
-from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL, SCHEDULER_BATCH_LIMIT
+from msuite_campaigns.broadcast.constants import (
+	ERROR_NO_RECIPIENTS_QUEUED,
+	SCHEDULE_PER_CHANNEL,
+	SCHEDULER_BATCH_LIMIT,
+	STALE_QUEUED_MINUTES,
+	STATUS_FAILED,
+	STATUS_QUEUED,
+)
 from msuite_campaigns.broadcast.hub import MAX_LAUNCH_ERROR_LENGTH
 from msuite_campaigns.broadcast.lifecycle import rollup_status, transition_channel
 from msuite_campaigns.campaign.services.relationships import is_campaign_active
+
+
+def fail_stale_queued_channels() -> int:
+	"""Identify and fail stale Queued broadcast channel rows with zero recipients.
+
+	Scans for child Broadcast Channel rows with status 'Queued' whose recipient_count
+	is 0 and whose modified timestamp is older than STALE_QUEUED_MINUTES (30 min).
+	Marks both the channel row and the parent Broadcast as 'Failed' with launch_error
+	set to ERROR_NO_RECIPIENTS_QUEUED ("No recipients were queued").
+
+	Uses lifecycle.transition_channel to transition the channel row to 'Failed'.
+
+	Params:
+		None.
+
+	Returns:
+		int: Number of stale channel rows marked Failed.
+
+	Raises:
+		None.
+
+	Side effects:
+		Transitions channel and parent broadcast status to 'Failed' in database.
+		Updates launch_error on tabBroadcast Channel and tabBroadcast.
+	"""
+	cutoff = add_to_date(now_datetime(), minutes=-STALE_QUEUED_MINUTES)
+	stale_rows = frappe.db.sql(
+		"""
+		SELECT
+			bc.name AS channel_row_name,
+			bc.channel AS channel,
+			bc.parent AS broadcast
+		FROM `tabBroadcast Channel` bc
+		JOIN `tabBroadcast` b ON b.name = bc.parent
+		WHERE bc.status = %(status_queued)s
+		  AND COALESCE(bc.recipient_count, 0) = 0
+		  AND bc.modified <= %(cutoff)s
+		ORDER BY bc.modified ASC
+		""",
+		{
+			"status_queued": STATUS_QUEUED,
+			"cutoff": cutoff,
+		},
+		as_dict=True,
+	)
+
+	failed_count = 0
+	for row in stale_rows:
+		try:
+			transition_channel(row.broadcast, row.channel, STATUS_FAILED)
+			frappe.db.set_value(
+				"Broadcast Channel",
+				row.channel_row_name,
+				"launch_error",
+				ERROR_NO_RECIPIENTS_QUEUED,
+				update_modified=False,
+			)
+			frappe.db.set_value(
+				"Broadcast",
+				row.broadcast,
+				{
+					"status": STATUS_FAILED,
+					"launch_error": ERROR_NO_RECIPIENTS_QUEUED,
+				},
+				update_modified=False,
+			)
+			failed_count += 1
+		except Exception as exc:
+			frappe.log_error(
+				title=f"Failed to mark stale queued channel {row.broadcast} {row.channel} as Failed",
+				message=frappe.get_traceback() if hasattr(frappe, "get_traceback") else str(exc),
+			)
+
+	return failed_count
 
 
 def start_due_channels() -> int:
@@ -50,6 +131,7 @@ def start_due_channels() -> int:
 		Enqueues background jobs.
 		Logs errors to tabError Log if individual channel dispatch fails.
 	"""
+	fail_stale_queued_channels()
 	now = now_datetime()
 	limit = SCHEDULER_BATCH_LIMIT
 

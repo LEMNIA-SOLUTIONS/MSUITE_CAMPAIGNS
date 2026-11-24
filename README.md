@@ -300,10 +300,13 @@ The unified broadcast system provides one configuration flag:
 - Memory capacity: The materializer loads recipient lists into memory during chunking. Lists up to 50,000 contacts operate within standard limits. Lists over 100,000 contacts require increased worker memory.
 - Database write overhead: `record_outbound` generates outbound `Channel Message` rows using keyset pagination. This step has O(N) database write complexity.
 - WhatsApp list-type blast migration: Historical WhatsApp list blasts without `Channel Message` rows migrate delivery counters only. Individual recipient logs cannot be reconstructed without message rows.
+- Broadcast completion and counter refresh: `refresh_counters` advances channels in `Queued` or `In Progress` to terminal completion (`Completed`, `Partially Failed`, `Failed`) once all recipients reach final delivery status, stepping through `In Progress` where direct lifecycle transition is not allowed.
+- Stale Queued channel resolution: `fail_stale_queued_channels()` marks Queued channels with zero recipients modified older than `STALE_QUEUED_MINUTES` (30 min) as `Failed` with launch error "No recipients were queued".
 
 #### Tests
 
 ```bash
+bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.broadcast.tests.test_broadcast_completion
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_broadcast_constants
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_recipient_list
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_broadcast_doctype

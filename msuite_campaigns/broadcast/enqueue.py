@@ -79,6 +79,11 @@ def enqueue_broadcast_channel(broadcast: str, channel: str) -> int:
 		)
 		chunks += 1
 
+	if chunks == 0:
+		from msuite_campaigns.broadcast.counters import request_counter_refresh
+
+		request_counter_refresh(broadcast, channel)
+
 	return chunks
 
 
