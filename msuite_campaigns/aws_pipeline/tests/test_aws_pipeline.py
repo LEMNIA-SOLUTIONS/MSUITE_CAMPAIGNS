@@ -115,6 +115,28 @@ class TestIsReady(IntegrationTestCase):
 			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
 			self.assertFalse(dispatch.is_ready("whatsapp"))
 
+	def test_require_feature_raises_when_aws_disabled(self):
+		"""_require_feature throws ValidationError when aws_enabled is False."""
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=False), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				dispatch._require_feature("whatsapp")
+			self.assertIn("AWS delivery is not enabled", str(ctx.exception))
+
+	def test_require_feature_raises_when_bulk_disabled(self):
+		"""_require_feature throws ValidationError when channel bulk messaging is disabled."""
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=False):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				dispatch._require_feature("whatsapp")
+			self.assertIn("Bulk Messaging is not available", str(ctx.exception))
+
+	def test_require_feature_passes_when_both_enabled(self):
+		"""_require_feature passes silently when both aws_enabled and bulk_enabled are True."""
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			dispatch._require_feature("whatsapp")
+
 
 class TestEnsureChannelSecretSynced(IntegrationTestCase):
 	def test_secrets_manager_sync_failure_aborts_instead_of_warning(self):

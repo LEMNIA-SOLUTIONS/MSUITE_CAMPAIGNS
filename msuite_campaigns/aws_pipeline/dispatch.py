@@ -262,8 +262,17 @@ def _require_feature(channel: str) -> None:
 	data and the AWS credentials both live, on infrastructure the customer
 	does not control. This one just fails fast, before building a manifest
 	that would be refused.
+
+	Args:
+		channel: Channel name ("whatsapp", "email", or "sms").
+
+	Raises:
+		frappe.ValidationError: If AWS delivery is disabled or bulk messaging is disabled on the plan.
 	"""
 	from msuite_core.services.plans import plan_enforcer
+
+	if not plan_enforcer.is_aws_enabled():
+		frappe.throw(_("AWS delivery is not enabled on your plan or account."))
 
 	if not plan_enforcer.is_bulk_enabled(channel):
 		frappe.throw(_("Bulk Messaging is not available on your current plan."))

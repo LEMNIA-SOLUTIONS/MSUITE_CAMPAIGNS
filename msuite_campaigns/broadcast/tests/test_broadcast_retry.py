@@ -30,7 +30,9 @@ from msuite_campaigns.broadcast.api.v1.broadcast import (
 	retry_failed_broadcast,
 )
 from msuite_campaigns.broadcast.constants import (
+	RECIPIENT_STATUS_FAILED,
 	RECIPIENT_STATUS_RETRYING,
+	RECIPIENT_STATUS_SENT,
 	STATUS_COMPLETED,
 	STATUS_FAILED,
 	STATUS_IN_PROGRESS,
@@ -39,6 +41,7 @@ from msuite_campaigns.broadcast.constants import (
 	STATUS_QUEUED,
 )
 from msuite_campaigns.broadcast.counters import refresh_counters
+from msuite_campaigns.broadcast.enqueue import run_chunk
 from msuite_campaigns.broadcast.recipients import requeue_failed_recipients
 
 TEST_PREFIX = "ZZTestRetry "
@@ -398,3 +401,139 @@ class TestBroadcastRetry(IntegrationTestCase):
 			res_cancel = cancel_broadcast(doc.name)
 			self.assertEqual(res_cancel, {"WhatsApp": "Cancelled"})
 			mock_cancel.assert_called_once_with(doc.name, channel=None)
+
+	def test_retry_recipient_fails_again_with_new_reason_and_channel_partially_failed(self) -> None:
+		"""Verify retried recipient gets the new failure reason and channel ends Partially Failed.
+
+		When a previously failed recipient is retried (status=Retrying) and send_one fails
+		again, the row must be updated with the new failure_reason (not the old one), and
+		refresh_counters must transition the channel to Partially Failed (when other rows succeeded)
+		rather than remaining stuck in Retrying.
+		"""
+		doc = self._make_broadcast(
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"status": STATUS_IN_PROGRESS,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"delivery_engine": "Standard",
+				}
+			],
+			status=STATUS_IN_PROGRESS,
+		)
+		frappe.db.set_value("Broadcast Channel", doc.channels[0].name, "status", STATUS_IN_PROGRESS)
+		frappe.db.set_value("Broadcast", doc.name, "status", STATUS_IN_PROGRESS)
+
+		# 1 Sent recipient
+		self._make_recipient(
+			doc.name,
+			"WhatsApp",
+			"+919876543250",
+			status=RECIPIENT_STATUS_SENT,
+			is_retryable=0,
+		)
+
+		# 1 Retrying recipient (old failure reason was "Old transient network error")
+		rec_retrying = self._make_recipient(
+			doc.name,
+			"WhatsApp",
+			"+919876543251",
+			status=RECIPIENT_STATUS_RETRYING,
+			is_retryable=1,
+			retry_count=1,
+			failure_reason=None,
+		)
+
+		new_failure = "Template parameter count mismatch: expected 2 got 1"
+		new_error_code = "PARAM_MISMATCH"
+
+		fake_adapter = {
+			"channel": "WhatsApp",
+			"send_one": MagicMock(
+				return_value={
+					"status": RECIPIENT_STATUS_FAILED,
+					"failure_reason": new_failure,
+					"error_code": new_error_code,
+					"is_retryable": 0,
+				}
+			),
+		}
+
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=fake_adapter):
+			res = run_chunk(doc.name, "WhatsApp", rec_retrying.name, rec_retrying.name)
+			self.assertEqual(res["sent"], 0)
+			self.assertEqual(res["failed"], 1)
+
+		rec_retrying.reload()
+		self.assertEqual(rec_retrying.status, RECIPIENT_STATUS_FAILED)
+		self.assertEqual(rec_retrying.failure_reason, new_failure)
+		self.assertEqual(rec_retrying.error_code, new_error_code)
+
+		counts = refresh_counters(doc.name, "WhatsApp")
+		self.assertEqual(counts["retrying_count"], 0)
+		self.assertEqual(counts["failed_count"], 1)
+		self.assertEqual(counts["sent_count"], 1)
+
+		doc.reload()
+		self.assertEqual(doc.channels[0].status, STATUS_PARTIALLY_FAILED)
+		self.assertEqual(doc.status, STATUS_PARTIALLY_FAILED)
+
+	def test_retry_recipient_provider_down_short_error_ends_failed(self) -> None:
+		"""Verify provider down error records short failure reason and channel transitions to Failed.
+
+		When a provider exception occurs during retry (e.g. 503 Provider unavailable),
+		the recipient status becomes Failed with the exception text, and refresh_counters
+		transitions the channel and broadcast to Failed rather than staying stuck in Retrying.
+		"""
+		doc = self._make_broadcast(
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"status": STATUS_IN_PROGRESS,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"delivery_engine": "Standard",
+				}
+			],
+			status=STATUS_IN_PROGRESS,
+		)
+		frappe.db.set_value("Broadcast Channel", doc.channels[0].name, "status", STATUS_IN_PROGRESS)
+		frappe.db.set_value("Broadcast", doc.name, "status", STATUS_IN_PROGRESS)
+
+		rec_retrying = self._make_recipient(
+			doc.name,
+			"WhatsApp",
+			"+919876543260",
+			status=RECIPIENT_STATUS_RETRYING,
+			is_retryable=1,
+			retry_count=1,
+			failure_reason=None,
+		)
+
+		provider_error_msg = "Meta Graph API 503: Service Unavailable (provider down)"
+
+		def fake_send_fail(broadcast_doc, channel_row, recipient_dict):
+			raise RuntimeError(provider_error_msg)
+
+		fake_adapter = {
+			"channel": "WhatsApp",
+			"send_one": fake_send_fail,
+		}
+
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=fake_adapter):
+			res = run_chunk(doc.name, "WhatsApp", rec_retrying.name, rec_retrying.name)
+			self.assertEqual(res["sent"], 0)
+			self.assertEqual(res["failed"], 1)
+
+		rec_retrying.reload()
+		self.assertEqual(rec_retrying.status, RECIPIENT_STATUS_FAILED)
+		self.assertEqual(rec_retrying.failure_reason, provider_error_msg)
+
+		counts = refresh_counters(doc.name, "WhatsApp")
+		self.assertEqual(counts["retrying_count"], 0)
+		self.assertEqual(counts["failed_count"], 1)
+
+		doc.reload()
+		self.assertEqual(doc.channels[0].status, STATUS_FAILED)
+		self.assertEqual(doc.status, STATUS_FAILED)

@@ -512,3 +512,16 @@ class TestBroadcastAws(IntegrationTestCase):
 		finally:
 			frappe.delete_doc("Contact", contact.name, force=True, ignore_permissions=True)
 
+	def test_require_feature_aws_disabled_aborts_export(self):
+		"""export_and_enqueue_channel fails fast via _require_feature if is_aws_enabled returns False."""
+		from msuite_campaigns.broadcast.aws import export_and_enqueue_channel
+
+		b = self._make_broadcast(channel="WhatsApp", delivery_engine="AWS")
+		bulk_insert_recipients(b.name, "WhatsApp", [{"address": "+919800000009"}])
+
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=False), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				export_and_enqueue_channel(b.name, "WhatsApp")
+			self.assertIn("AWS delivery is not enabled", str(ctx.exception))
+
