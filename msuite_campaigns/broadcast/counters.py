@@ -73,6 +73,7 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 			SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) AS clicked_count,
 			SUM(CASE WHEN status = 'Unsubscribed' THEN 1 ELSE 0 END) AS unsubscribed_count,
 			COALESCE(SUM(retry_count), 0) AS retry_count,
+			SUM(CASE WHEN status = 'Retrying' THEN 1 ELSE 0 END) AS retrying_count,
 			SUM(CASE WHEN status IN %(pending_statuses)s THEN 1 ELSE 0 END) AS queued_count
 		FROM `tabBroadcast Recipient`
 		WHERE `broadcast` = %(broadcast)s
@@ -100,6 +101,7 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 		"clicked_count": cint(row_data.get("clicked_count")),
 		"unsubscribed_count": cint(row_data.get("unsubscribed_count")),
 		"retry_count": cint(row_data.get("retry_count")),
+		"retrying_count": cint(row_data.get("retrying_count")),
 	}
 	queued_count = cint(row_data.get("queued_count"))
 
@@ -111,7 +113,8 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 	)
 
 	if ch_row:
-		frappe.db.set_value("Broadcast Channel", ch_row.name, counts, update_modified=False)
+		db_counts = {k: v for k, v in counts.items() if k != "retrying_count"}
+		frappe.db.set_value("Broadcast Channel", ch_row.name, db_counts, update_modified=False)
 
 		all_counts = frappe.db.get_values(
 			"Broadcast Channel",

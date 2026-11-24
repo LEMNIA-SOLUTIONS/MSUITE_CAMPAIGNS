@@ -106,6 +106,16 @@ STATUS_PARTIALLY_FAILED: str = "Partially Failed"
 STATUS_FAILED: str = "Failed"
 STATUS_CANCELLED: str = "Cancelled"
 
+RECIPIENT_STATUS_QUEUED: str = "Queued"
+RECIPIENT_STATUS_SENT: str = "Sent"
+RECIPIENT_STATUS_DELIVERED: str = "Delivered"
+RECIPIENT_STATUS_READ: str = "Read"
+RECIPIENT_STATUS_FAILED: str = "Failed"
+RECIPIENT_STATUS_BOUNCED: str = "Bounced"
+RECIPIENT_STATUS_RETRYING: str = "Retrying"
+RECIPIENT_STATUS_SKIPPED: str = "Skipped"
+RECIPIENT_STATUS_UNSUBSCRIBED: str = "Unsubscribed"
+
 # DocType constants
 BROADCAST_DOCTYPE: str = "Broadcast"
 BROADCAST_CHANNEL_DOCTYPE: str = "Broadcast Channel"

@@ -633,8 +633,21 @@ def get_broadcast(name: str) -> dict:
 	if CHANNEL_WHATSAPP not in user_channels:
 		doc_dict["products"] = []
 
+	retrying_counts_raw = frappe.db.sql(
+		"""
+		SELECT channel, COUNT(*) AS retrying_count
+		FROM `tabBroadcast Recipient`
+		WHERE broadcast = %(broadcast)s AND status = 'Retrying'
+		GROUP BY channel
+		""",
+		{"broadcast": name},
+		as_dict=True,
+	)
+	retrying_by_channel = {r["channel"]: cint(r["retrying_count"]) for r in retrying_counts_raw}
+
 	for ch in doc_dict.get("channels", []):
 		ch_name = ch.get("channel")
+		ch["retrying_count"] = retrying_by_channel.get(ch_name, 0)
 		try:
 			from msuite_campaigns.broadcast import rollup
 			ch["channel_metrics"] = rollup.channel_metrics(doc, ch_name)
@@ -874,10 +887,10 @@ def pause_broadcast(name: str, channel: str = "") -> dict:
 		Updates Broadcast and channel row statuses in DB.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.pause(name, channel=target_channel)
+	return hub.pause(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -897,12 +910,13 @@ def resume_broadcast(name: str, channel: str = "") -> dict:
 
 	Side effects:
 		Updates Broadcast and channel row statuses in DB.
+		Enqueues delivery jobs for resumed channels.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.resume(name, channel=target_channel)
+	return hub.resume(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -924,10 +938,10 @@ def cancel_broadcast(name: str, channel: str = "") -> dict:
 		Updates Broadcast and channel row statuses in DB.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.cancel(name, channel=target_channel)
+	return hub.cancel(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -947,12 +961,13 @@ def retry_failed_broadcast(name: str, channel: str = "") -> dict:
 
 	Side effects:
 		Updates Broadcast, channel rows, and recipient rows in DB.
+		Enqueues delivery jobs for retried channels.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.retry_failed(name, channel=target_channel)
+	return hub.retry(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -1063,6 +1078,18 @@ def get_broadcast_progress(name: str) -> dict:
 		],
 	)
 
+	retrying_counts_raw = frappe.db.sql(
+		"""
+		SELECT channel, COUNT(*) AS retrying_count
+		FROM `tabBroadcast Recipient`
+		WHERE broadcast = %(broadcast)s AND status = 'Retrying'
+		GROUP BY channel
+		""",
+		{"broadcast": name},
+		as_dict=True,
+	)
+	retrying_by_channel = {r["channel"]: cint(r["retrying_count"]) for r in retrying_counts_raw}
+
 	progress: dict[str, dict[str, Any]] = {}
 	for row in channel_rows:
 		if row.channel not in user_channels:
@@ -1078,6 +1105,7 @@ def get_broadcast_progress(name: str) -> dict:
 			"delivered_count": cint(row.delivered_count),
 			"read_count": cint(row.read_count),
 			"failed_count": cint(row.failed_count),
+			"retrying_count": retrying_by_channel.get(row.channel, 0),
 			"percent_sent": pct,
 		}
 

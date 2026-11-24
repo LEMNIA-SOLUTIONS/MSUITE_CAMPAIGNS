@@ -215,15 +215,15 @@ The adapter dictionary must contain the following keys:
 |---|---|---|
 | `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}`. Supports `date_range` presets (`today`, `7days`, `30days`, `month`, `quarter`, `custom`). Rows and channels carry `planned_recipient_count` with row-level draft fallback for `recipient_count`. |
 | `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "paused": int, "completed": int, "failed": int, "cancelled": int}` |
-| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics` and `planned_recipient_count`. Top level includes `planned_recipient_count`.) |
+| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics`, `planned_recipient_count`, and live `retrying_count`. Top level includes `planned_recipient_count`.) |
 | `save_broadcast` | `doc, launch=0, individual_rows="[]", name=""` | `{"name": str, "status": str, "results": dict}`. Only user-editable fields are accepted. Status, counters and timestamps are set by the system. A new broadcast always starts as `Draft`. |
 | `launch_broadcast` | `name, individual_rows="[]"` | `dict[str, str]` (per-channel status) |
-| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
-| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A resumed Standard channel sends the recipients that are still `Queued`. |
-| `cancel_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
-| `retry_failed_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
+| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.pause`). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
+| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.resume`). A resumed Standard channel sends the recipients that are still `Queued` or `Retrying`. |
+| `cancel_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.cancel`). |
+| `retry_failed_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.retry`). Flips retryable Failed recipients to `Retrying`, clears old failure reason and error code, and begins delivery via `start_channel`. |
 | `delete_broadcasts` | `names` (JSON list string) | `{"deleted": list[str], "failed": list[dict]}` |
-| `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress and percentages) |
+| `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress, percentages, and live `retrying_count`) |
 | `get_broadcast_recipients` | `name, channel="", status="", search="", start=0, length=50, export=0` | `{"rows": list[dict], "total": int, "truncated": bool}` |
 | `get_broadcast_draft_recipients` | `name, search="", start=0, page_length=20` | `{"rows": list[dict], "total": int}` (preview contacts from linked Recipient List for Draft/Scheduled broadcasts). |
 | `clone_broadcast` | `name` | `dict` (new Draft Broadcast document). The user needs create access to every channel on the source broadcast. |
@@ -306,12 +306,14 @@ The unified broadcast system provides one configuration flag:
 - Memory capacity: The materializer loads recipient lists into memory during chunking. Lists up to 50,000 contacts operate within standard limits. Lists over 100,000 contacts require increased worker memory.
 - Database write overhead: `record_outbound` generates outbound `Channel Message` rows using keyset pagination. This step has O(N) database write complexity.
 - WhatsApp list-type blast migration: Historical WhatsApp list blasts without `Channel Message` rows migrate delivery counters only. Individual recipient logs cannot be reconstructed without message rows.
-- Broadcast completion and counter refresh: `refresh_counters` advances channels in `Queued` or `In Progress` to terminal completion (`Completed`, `Partially Failed`, `Failed`) once all recipients reach final delivery status, stepping through `In Progress` where direct lifecycle transition is not allowed.
+- Broadcast completion and counter refresh: `refresh_counters` advances channels in `Queued` or `In Progress` to terminal completion (`Completed`, `Partially Failed`, `Failed`) once all recipients reach final delivery status, stepping through `In Progress` where direct lifecycle transition is not allowed. Computes live `retrying_count` for active retry rows without storing an unbacked DB column.
+- Retry execution and status clearing: `requeue_failed_recipients` flips retryable `Failed` recipient rows to `Retrying`, clears `failure_reason` and `error_code`, and increments `retry_count`. API endpoints (`retry_failed_broadcast`, `resume_broadcast`, `pause_broadcast`, `cancel_broadcast`) delegate to `broadcast.hub` to ensure delivery jobs are queued.
 - Stale Queued channel resolution: `fail_stale_queued_channels()` marks Queued channels with zero recipients modified older than `STALE_QUEUED_MINUTES` (30 min) as `Failed` with launch error "No recipients were queued".
 
 #### Tests
 
 ```bash
+bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.broadcast.tests.test_broadcast_retry
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.broadcast.tests.test_broadcast_completion
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_broadcast_constants
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_recipient_list
