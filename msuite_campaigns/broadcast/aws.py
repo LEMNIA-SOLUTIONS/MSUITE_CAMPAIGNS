@@ -74,8 +74,8 @@ def should_use_aws(broadcast_doc: Any, channel_row: Any) -> bool:
 
 	Evaluates:
 	  1. channel_row delivery_engine == 'AWS'
-	  2. recipient_count >= min_recipient_threshold
-	  3. is_ready(channel)
+	  2. recipient_count > min_recipient_threshold (when threshold > 0, count <= threshold routes Standard)
+	  3. is_ready(channel) (requires provider master switch, credentials, and plan feature)
 
 	Args:
 		broadcast_doc: Broadcast document instance or dict-like object.
@@ -107,7 +107,7 @@ def should_use_aws(broadcast_doc: Any, channel_row: Any) -> bool:
 		or 0
 	)
 	threshold = get_min_recipient_threshold()
-	if count < threshold:
+	if threshold > 0 and count <= threshold:
 		return False
 
 	channel = (

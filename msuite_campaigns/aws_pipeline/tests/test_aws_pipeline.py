@@ -36,6 +36,85 @@ class TestShouldUseAws(IntegrationTestCase):
 		with patch.object(dispatch, "get_min_recipient_threshold", return_value=5):
 			self.assertFalse(dispatch.should_use_aws(doc, rows))
 
+	def test_count_threshold_plus_one_routes_to_aws(self):
+		"""count > threshold routes to AWS when engine is AWS and is_ready is True."""
+		doc = frappe._dict({"delivery_engine": "AWS", "doctype": "Bulk SMS Message", "name": "SMS-THRESH"})
+		rows = [f"row-{i}" for i in range(6)]  # len(rows) == threshold + 1
+
+		with patch.object(dispatch, "get_min_recipient_threshold", return_value=5), \
+			patch.object(dispatch, "is_ready", return_value=True):
+			self.assertTrue(dispatch.should_use_aws(doc, rows))
+
+	def test_count_zero_threshold_zero_routes_to_aws(self):
+		"""When threshold is 0, count 0 does not trigger threshold fallback and routes to AWS if ready."""
+		doc = frappe._dict({"delivery_engine": "AWS", "doctype": "Bulk SMS Message", "name": "SMS-THRESH"})
+		rows = []
+
+		with patch.object(dispatch, "get_min_recipient_threshold", return_value=0), \
+			patch.object(dispatch, "is_ready", return_value=True):
+			self.assertTrue(dispatch.should_use_aws(doc, rows))
+
+	def test_count_below_threshold_routes_to_standard(self):
+		"""count < threshold routes to Standard."""
+		doc = frappe._dict({"delivery_engine": "AWS", "doctype": "Bulk SMS Message", "name": "SMS-THRESH"})
+		rows = [f"row-{i}" for i in range(4)]  # len(rows) < threshold
+
+		with patch.object(dispatch, "get_min_recipient_threshold", return_value=5):
+			self.assertFalse(dispatch.should_use_aws(doc, rows))
+
+
+class TestIsReady(IntegrationTestCase):
+	"""Test is_ready() requirement for provider master switch (aws_enabled)."""
+
+	def setUp(self):
+		super().setUp()
+		self.orig_force_ready = getattr(frappe.flags, "aws_pipeline_force_ready", None)
+		frappe.flags.aws_pipeline_force_ready = True
+		self.mock_settings = frappe._dict({"provider_url": "https://provider.example.com", "api_key": "test_key"})
+
+	def tearDown(self):
+		if self.orig_force_ready is None:
+			delattr(frappe.flags, "aws_pipeline_force_ready")
+		else:
+			frappe.flags.aws_pipeline_force_ready = self.orig_force_ready
+		super().tearDown()
+
+	def test_is_ready_false_when_aws_enabled_missing(self):
+		"""is_ready returns False when aws_enabled is missing from plan_data."""
+		with patch("frappe.get_cached_doc", return_value=self.mock_settings), \
+			patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=False), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			self.assertFalse(dispatch.is_ready("whatsapp"))
+
+	def test_is_ready_false_when_aws_enabled_false(self):
+		"""is_ready returns False when aws_enabled is False."""
+		with patch("frappe.get_cached_doc", return_value=self.mock_settings), \
+			patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=False), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			self.assertFalse(dispatch.is_ready("whatsapp"))
+
+	def test_is_ready_true_when_aws_enabled_true_and_all_conditions_met(self):
+		"""is_ready returns True when aws_enabled is True, credentials present, and bulk feature enabled."""
+		with patch("frappe.get_cached_doc", return_value=self.mock_settings), \
+			patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			self.assertTrue(dispatch.is_ready("whatsapp"))
+
+	def test_is_ready_false_when_bulk_disabled_even_if_aws_enabled(self):
+		"""is_ready returns False when bulk_messaging is disabled even if aws_enabled is True."""
+		with patch("frappe.get_cached_doc", return_value=self.mock_settings), \
+			patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=False):
+			self.assertFalse(dispatch.is_ready("whatsapp"))
+
+	def test_is_ready_false_when_provider_credentials_missing(self):
+		"""is_ready returns False when provider_url or api_key is missing."""
+		empty_settings = frappe._dict({"provider_url": "", "api_key": ""})
+		with patch("frappe.get_cached_doc", return_value=empty_settings), \
+			patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			self.assertFalse(dispatch.is_ready("whatsapp"))
+
 
 class TestEnsureChannelSecretSynced(IntegrationTestCase):
 	def test_secrets_manager_sync_failure_aborts_instead_of_warning(self):

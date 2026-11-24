@@ -134,12 +134,33 @@ class TestBroadcastAws(IntegrationTestCase):
 		):
 			self.assertFalse(should_use_aws(broadcast_doc, row_aws_ready_false))
 
-		# 4. Truthy case: engine AWS, recipient_count >= threshold, is_ready is True -> True
+		# 4. Truthy case: engine AWS, recipient_count > threshold, is_ready is True -> True
 		row_aws_ok = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 100})
 		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
 			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
 		):
 			self.assertTrue(should_use_aws(broadcast_doc, row_aws_ok))
+
+		# 5. Boundary case: recipient_count == threshold (50 == 50) -> False (routes Standard)
+		row_aws_exact_thresh = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 50})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
+		):
+			self.assertFalse(should_use_aws(broadcast_doc, row_aws_exact_thresh))
+
+		# 6. Boundary case: recipient_count == threshold + 1 (51 > 50) -> True (routes AWS)
+		row_aws_thresh_plus_one = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 51})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
+		):
+			self.assertTrue(should_use_aws(broadcast_doc, row_aws_thresh_plus_one))
+
+		# 7. Boundary case: threshold == 0, recipient_count == 0 -> True (when AWS and ready)
+		row_aws_zero = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 0})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=0
+		):
+			self.assertTrue(should_use_aws(broadcast_doc, row_aws_zero))
 
 	def test_export_order_presign_upload_sync_trigger_record(self):
 		"""export_and_enqueue_channel enforces exact order: presign < upload < sync < trigger < record."""

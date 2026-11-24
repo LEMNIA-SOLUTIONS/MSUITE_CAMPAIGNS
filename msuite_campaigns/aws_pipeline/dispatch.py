@@ -27,6 +27,9 @@ from msuite_campaigns.aws_pipeline import client, manifest
 # caps a single IN list, not for throughput — 100k rows is 100 statements.
 _FLIP_CHUNK = 1000
 
+# Legacy minimum recipient threshold constant (default 50).
+AWS_MIN_RECIPIENT_THRESHOLD = 50
+
 
 def export_and_enqueue(bulk_doc, rows: list | None = None) -> dict:
 	"""Hand a whole blast to the execution plane.
@@ -123,7 +126,8 @@ def _ensure_channel_secret_synced(channel: str, bulk_doc) -> None:
 
 def is_ready(channel: str = "") -> bool:
 	"""Can this site actually route a blast through the AWS engine?
-	`channel` empty = bulk is on for any channel.
+	`channel` empty = bulk is on for any channel (bulk_messaging). Requires
+	provider master switch (aws_enabled), provider_url, api_key, and plan feature.
 
 	`delivery_engine` now defaults to `AWS`, which means an unconfigured site
 	would otherwise fail **every** bulk send rather than just the opted-in
@@ -152,7 +156,7 @@ def is_ready(channel: str = "") -> bool:
 	if not (settings.get("provider_url") and settings.get("api_key")):
 		return False
 
-	return plan_enforcer.is_bulk_enabled(channel)
+	return plan_enforcer.is_aws_enabled() and plan_enforcer.is_bulk_enabled(channel)
 
 
 def get_min_recipient_threshold() -> int:
@@ -162,16 +166,17 @@ def get_min_recipient_threshold() -> int:
 	Defaults to 0 (no minimum threshold).
 	"""
 	try:
+		from msuite_core.constants import AWS_MIN_RECIPIENT_THRESHOLD_PLAN_KEY
 		from msuite_core.services.plans import plan_enforcer
 
 		plan_data = plan_enforcer.get_plan_data()
 		if plan_data:
-			custom = plan_data.get("aws_min_recipient_threshold")
+			custom = plan_data.get(AWS_MIN_RECIPIENT_THRESHOLD_PLAN_KEY)
 			if custom is not None:
 				return int(custom)
 			bulk_feature = plan_data.get("features", {}).get("bulk_messaging", {})
-			if isinstance(bulk_feature, dict) and bulk_feature.get("aws_min_recipient_threshold") is not None:
-				return int(bulk_feature["aws_min_recipient_threshold"])
+			if isinstance(bulk_feature, dict) and bulk_feature.get(AWS_MIN_RECIPIENT_THRESHOLD_PLAN_KEY) is not None:
+				return int(bulk_feature[AWS_MIN_RECIPIENT_THRESHOLD_PLAN_KEY])
 	except Exception:
 		pass
 	return 0
@@ -243,7 +248,7 @@ def should_use_aws(doc, rows: list | None = None) -> bool:
 
 	frappe.logger().warning(
 		f"aws_pipeline: {doc.doctype} {doc.name} is set to AWS but this site is not "
-		"configured for it (provider_url / api_key / plan feature) — falling back to Standard"
+		"configured for it (provider_url / api_key / aws_enabled / plan feature) — falling back to Standard"
 	)
 	return False
 
