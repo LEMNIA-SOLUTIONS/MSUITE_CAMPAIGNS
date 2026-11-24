@@ -26,6 +26,14 @@ from msuite_campaigns.broadcast.constants import (
 	CHANNEL_SMS,
 	CHANNEL_WHATSAPP,
 	CHANNELS,
+	DATE_RANGE_30DAYS,
+	DATE_RANGE_7DAYS,
+	DATE_RANGE_CUSTOM,
+	DATE_RANGE_MONTH,
+	DATE_RANGE_QUARTER,
+	DATE_RANGE_TODAY,
+	DEFAULT_DRAFT_PAGE_LENGTH,
+	MAX_DRAFT_PAGE_LENGTH,
 	SCHEDULE_SAME,
 	STATUS_CANCELLED,
 	STATUS_COMPLETED,
@@ -46,6 +54,139 @@ from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 MAX_PAGE_LENGTH: int = 100
 EXPORT_LIMIT: int = 10000
 MAX_BULK_DELETE_LIMIT: int = 50
+
+
+def _planned_recipient_count(
+	doc_or_row: dict | Any,
+	channel_row: dict | Any | None = None,
+	list_counts: dict[str, dict[str, int]] | None = None,
+) -> int:
+	"""Compute planned recipient count for a broadcast or channel row.
+
+	For Draft or Scheduled rows with stored recipient_count == 0, reads
+	valid_phone_count (for WhatsApp and SMS) or valid_email_count (for Email)
+	from the linked Recipient List. If the source is Individual, returns 0
+	(individual rows are not stored prior to launch). For launched rows or
+	rows with non-zero stored count, returns the stored recipient count.
+
+	Params:
+		doc_or_row: Broadcast document or dictionary.
+		channel_row: Optional channel row dictionary or child doc.
+		list_counts: Optional pre-fetched map of recipient list names to counts dict.
+
+	Returns:
+		int: Planned recipient count (>= 0).
+
+	Exceptions:
+		None. Gracefully handles missing or unreadable lists by returning 0.
+
+	Side effects:
+		May query tabRecipient List if list_counts is not provided.
+	"""
+	if channel_row is not None:
+		status = getattr(channel_row, "status", None) or (
+			channel_row.get("status") if isinstance(channel_row, dict) else None
+		)
+		stored_count = cint(
+			getattr(channel_row, "recipient_count", None)
+			or (channel_row.get("recipient_count") if isinstance(channel_row, dict) else 0)
+		)
+		if status not in (STATUS_DRAFT, STATUS_SCHEDULED) or stored_count > 0:
+			return stored_count
+
+		recipient_source = getattr(doc_or_row, "recipient_source", None) or (
+			doc_or_row.get("recipient_source") if isinstance(doc_or_row, dict) else None
+		)
+		if recipient_source != "Recipient List":
+			return 0
+
+		list_name = getattr(doc_or_row, "recipient_list", None) or (
+			doc_or_row.get("recipient_list") if isinstance(doc_or_row, dict) else None
+		)
+		if not list_name:
+			return 0
+
+		list_data = None
+		if list_counts is not None:
+			list_data = list_counts.get(list_name)
+		else:
+			try:
+				if frappe.has_permission("Recipient List", "read", doc=list_name):
+					list_data = frappe.db.get_value(
+						"Recipient List",
+						list_name,
+						["valid_phone_count", "valid_email_count"],
+						as_dict=True,
+					)
+			except Exception:
+				list_data = None
+
+		if not list_data:
+			return 0
+
+		ch_name = getattr(channel_row, "channel", None) or (
+			channel_row.get("channel") if isinstance(channel_row, dict) else None
+		)
+		if ch_name in (CHANNEL_WHATSAPP, CHANNEL_SMS):
+			return cint(list_data.get("valid_phone_count"))
+		elif ch_name == CHANNEL_EMAIL:
+			return cint(list_data.get("valid_email_count"))
+		return 0
+
+	# doc_or_row top level
+	status = getattr(doc_or_row, "status", None) or (
+		doc_or_row.get("status") if isinstance(doc_or_row, dict) else None
+	)
+	stored_total = cint(
+		getattr(doc_or_row, "total_recipients", None)
+		or (doc_or_row.get("total_recipients") if isinstance(doc_or_row, dict) else 0)
+	)
+	if status not in (STATUS_DRAFT, STATUS_SCHEDULED) or stored_total > 0:
+		return stored_total
+
+	channels = getattr(doc_or_row, "channels", None) or (
+		doc_or_row.get("channels") if isinstance(doc_or_row, dict) else []
+	)
+	if channels:
+		counts = [
+			c.get("planned_recipient_count")
+			if isinstance(c, dict) and "planned_recipient_count" in c
+			else _planned_recipient_count(doc_or_row, c, list_counts=list_counts)
+			for c in channels
+		]
+		return max(counts, default=0)
+
+	recipient_source = getattr(doc_or_row, "recipient_source", None) or (
+		doc_or_row.get("recipient_source") if isinstance(doc_or_row, dict) else None
+	)
+	if recipient_source != "Recipient List":
+		return 0
+
+	list_name = getattr(doc_or_row, "recipient_list", None) or (
+		doc_or_row.get("recipient_list") if isinstance(doc_or_row, dict) else None
+	)
+	if not list_name:
+		return 0
+
+	list_data = None
+	if list_counts is not None:
+		list_data = list_counts.get(list_name)
+	else:
+		try:
+			if frappe.has_permission("Recipient List", "read", doc=list_name):
+				list_data = frappe.db.get_value(
+					"Recipient List",
+					list_name,
+					["valid_phone_count", "valid_email_count"],
+					as_dict=True,
+				)
+		except Exception:
+			list_data = None
+
+	if not list_data:
+		return 0
+
+	return cint(list_data.get("valid_phone_count")) or cint(list_data.get("valid_email_count")) or 0
 
 
 def _loads(raw: Any, default: Any) -> Any:
@@ -150,13 +291,21 @@ def list_broadcasts(
 	if date_range:
 		dr = str(date_range).strip().lower()
 		today_date = today()
-		if dr == "today":
+		t = getdate(today_date)
+		if dr in ("today", DATE_RANGE_TODAY):
 			parsed_filters.append(["modified", ">=", today_date])
-		elif dr == "7days":
+		elif dr in ("7days", DATE_RANGE_7DAYS):
 			parsed_filters.append(["modified", ">=", str(add_days(today_date, -7))])
-		elif dr == "30days":
+		elif dr in ("30days", DATE_RANGE_30DAYS):
 			parsed_filters.append(["modified", ">=", str(add_days(today_date, -30))])
-		elif dr == "custom":
+		elif dr in ("month", DATE_RANGE_MONTH):
+			month_start = str(t.replace(day=1))
+			parsed_filters.append(["modified", ">=", month_start])
+		elif dr in ("quarter", DATE_RANGE_QUARTER):
+			quarter_start_month = 1 + 3 * ((t.month - 1) // 3)
+			quarter_start = str(t.replace(month=quarter_start_month, day=1))
+			parsed_filters.append(["modified", ">=", quarter_start])
+		elif dr in ("custom", DATE_RANGE_CUSTOM):
 			if date_from and str(date_from).strip():
 				try:
 					valid_from = str(getdate(str(date_from).strip()))
@@ -204,6 +353,26 @@ def list_broadcasts(
 	user_channels = permitted_channels(frappe.session.user)
 	broadcast_names = [d["name"] for d in docs]
 	channels_by_parent: dict[str, list[dict]] = {name: [] for name in broadcast_names}
+	parent_docs_map = {d["name"]: d for d in docs}
+
+	# Batched retrieval of recipient list counts for draft/scheduled broadcasts
+	distinct_lists = list({
+		d["recipient_list"]
+		for d in docs
+		if d.get("recipient_source") == "Recipient List" and d.get("recipient_list")
+	})
+	list_counts: dict[str, dict[str, int]] = {}
+	if distinct_lists:
+		try:
+			if frappe.has_permission("Recipient List", "read"):
+				fetched_lists = frappe.get_all(
+					"Recipient List",
+					filters={"name": ["in", distinct_lists]},
+					fields=["name", "valid_phone_count", "valid_email_count"],
+				)
+				list_counts = {l["name"]: l for l in fetched_lists}
+		except Exception:
+			list_counts = {}
 
 	if broadcast_names:
 		all_channels = frappe.get_all(
@@ -242,20 +411,31 @@ def list_broadcasts(
 				template_name = ch.get("sms_template")
 				account_name = ch.get("sms_account")
 
+			parent_doc = parent_docs_map.get(ch["parent"], {})
+			planned_cnt = _planned_recipient_count(parent_doc, ch, list_counts=list_counts)
+
 			channels_by_parent[ch["parent"]].append({
 				"channel": ch["channel"],
 				"status": ch["status"],
 				"template": template_name,
 				"account": account_name,
 				"recipient_count": cint(ch.get("recipient_count")),
+				"planned_recipient_count": planned_cnt,
 				"sent_count": cint(ch.get("sent_count")),
 				"delivered_count": cint(ch.get("delivered_count")),
 				"failed_count": cint(ch.get("failed_count")),
 			})
 
 	for row in docs:
-		row["recipient_count"] = cint(row.get("total_recipients"))
-		row["channels"] = channels_by_parent.get(row["name"], [])
+		row_channels = channels_by_parent.get(row["name"], [])
+		row["channels"] = row_channels
+		top_planned = _planned_recipient_count(row, list_counts=list_counts)
+		row["planned_recipient_count"] = top_planned
+		stored_total = cint(row.get("total_recipients"))
+		if row.get("status") in (STATUS_DRAFT, STATUS_SCHEDULED) and stored_total == 0:
+			row["recipient_count"] = top_planned
+		else:
+			row["recipient_count"] = stored_total
 
 	return {"rows": docs, "total": total}
 
@@ -325,6 +505,7 @@ def get_broadcast_metrics() -> dict:
 			"draft": int,
 			"scheduled": int,
 			"inProgress": int,
+			"paused": int,
 			"completed": int,
 			"failed": int,
 			"cancelled": int,
@@ -348,6 +529,7 @@ def get_broadcast_metrics() -> dict:
 		"draft": 0,
 		"scheduled": 0,
 		"inProgress": 0,
+		"paused": 0,
 		"completed": 0,
 		"failed": 0,
 		"cancelled": 0,
@@ -363,6 +545,8 @@ def get_broadcast_metrics() -> dict:
 			metrics["scheduled"] += cnt
 		elif st in (STATUS_QUEUED, STATUS_IN_PROGRESS):
 			metrics["inProgress"] += cnt
+		elif st == STATUS_PAUSED:
+			metrics["paused"] += cnt
 		elif st == STATUS_COMPLETED:
 			metrics["completed"] += cnt
 		elif st in (STATUS_FAILED, STATUS_PARTIALLY_FAILED):
@@ -409,6 +593,10 @@ def get_broadcast(name: str) -> dict:
 			ch["channel_metrics"] = rollup.channel_metrics(doc, ch_name)
 		except Exception:
 			ch["channel_metrics"] = {}
+
+		ch["planned_recipient_count"] = _planned_recipient_count(doc_dict, ch)
+
+	doc_dict["planned_recipient_count"] = _planned_recipient_count(doc_dict)
 
 	return doc_dict
 
@@ -971,6 +1159,110 @@ def get_broadcast_recipients(
 		start=start,
 		limit_page_length=length,
 	)
+
+	return {"rows": rows, "total": total}
+
+
+@frappe.whitelist()
+def get_broadcast_draft_recipients(
+	name: str,
+	search: str = "",
+	start: int = 0,
+	page_length: int = DEFAULT_DRAFT_PAGE_LENGTH,
+) -> dict:
+	"""Fetch preview recipient rows from the linked Recipient List for a Draft/Scheduled broadcast.
+
+	Requires read permission on both the Broadcast and the linked Recipient List.
+	Only returns records while the Broadcast is in Draft or Scheduled status.
+	Address defaults to phone_e164 or email_normalized (or channel-appropriate contact address).
+
+	Params:
+		name: Broadcast document name.
+		search: Optional search term matching recipient full name or address.
+		start: 0-indexed pagination offset.
+		page_length: Number of rows to return, clamped to MAX_DRAFT_PAGE_LENGTH.
+
+	Returns:
+		dict: {"rows": [{"recipient_name": str, "address": str}], "total": int}.
+
+	Exceptions:
+		frappe.PermissionError: If user lacks read permission on Broadcast or Recipient List.
+		frappe.DoesNotExistError: If target Broadcast document does not exist.
+
+	Side effects:
+		Queries the database.
+	"""
+	frappe.has_permission("Broadcast", "read", doc=name, throw=True)
+	b_doc = frappe.get_doc("Broadcast", name)
+
+	if b_doc.status not in (STATUS_DRAFT, STATUS_SCHEDULED):
+		return {"rows": [], "total": 0}
+
+	if b_doc.recipient_source != "Recipient List" or not b_doc.recipient_list:
+		return {"rows": [], "total": 0}
+
+	frappe.has_permission("Recipient List", "read", doc=b_doc.recipient_list, throw=True)
+
+	if not frappe.db.exists("Recipient List", b_doc.recipient_list):
+		return {"rows": [], "total": 0}
+
+	start = max(0, cint(start))
+	limit = cint(page_length) if cint(page_length) > 0 else DEFAULT_DRAFT_PAGE_LENGTH
+	limit = min(limit, MAX_DRAFT_PAGE_LENGTH)
+
+	base_conditions = [
+		"parent = %(parent)s",
+		"parenttype = 'Recipient List'",
+		"parentfield = 'contacts'",
+	]
+	params: dict[str, Any] = {
+		"parent": b_doc.recipient_list,
+		"limit": limit,
+		"offset": start,
+	}
+
+	search_term = str(search).strip() if search else ""
+	if search_term:
+		base_conditions.append(
+			"(full_name LIKE %(search)s OR phone_e164 LIKE %(search)s OR raw_phone LIKE %(search)s OR email_normalized LIKE %(search)s OR raw_email LIKE %(search)s)"
+		)
+		params["search"] = f"%{search_term}%"
+
+	where_clause = " AND ".join(base_conditions)
+
+	total_res = frappe.db.sql(
+		f"SELECT COUNT(*) FROM `tabRecipient Contact` WHERE {where_clause}",
+		params,
+	)
+	total = cint(total_res[0][0]) if total_res else 0
+
+	if total == 0 or start >= total:
+		return {"rows": [], "total": total}
+
+	raw_contacts = frappe.db.sql(
+		f"""
+		SELECT full_name, phone_e164, raw_phone, email_normalized, raw_email
+		FROM `tabRecipient Contact`
+		WHERE {where_clause}
+		ORDER BY idx ASC, name ASC
+		LIMIT %(limit)s OFFSET %(offset)s
+		""",
+		params,
+		as_dict=True,
+	)
+
+	is_email_only = bool(b_doc.channels) and all(ch.channel == CHANNEL_EMAIL for ch in b_doc.channels)
+	rows = []
+	for c in raw_contacts:
+		rec_name = c.get("full_name") or ""
+		if is_email_only:
+			addr = c.get("email_normalized") or c.get("raw_email") or c.get("phone_e164") or c.get("raw_phone") or ""
+		else:
+			addr = c.get("phone_e164") or c.get("raw_phone") or c.get("email_normalized") or c.get("raw_email") or ""
+		rows.append({
+			"recipient_name": rec_name,
+			"address": addr,
+		})
 
 	return {"rows": rows, "total": total}
 

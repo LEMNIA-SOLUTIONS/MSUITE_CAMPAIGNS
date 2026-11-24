@@ -171,5 +171,18 @@ WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
 	"sms_template",
 )
 
+# Pagination limits for draft recipients preview
+DEFAULT_DRAFT_PAGE_LENGTH: int = 20
+MAX_DRAFT_PAGE_LENGTH: int = 100
+
+# Date range presets for broadcast listing
+DATE_RANGE_TODAY: str = "today"
+DATE_RANGE_7DAYS: str = "7days"
+DATE_RANGE_30DAYS: str = "30days"
+DATE_RANGE_MONTH: str = "month"
+DATE_RANGE_QUARTER: str = "quarter"
+DATE_RANGE_CUSTOM: str = "custom"
+
+
 
 

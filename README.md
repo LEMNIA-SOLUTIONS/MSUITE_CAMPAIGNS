@@ -207,9 +207,9 @@ The adapter dictionary must contain the following keys:
 
 | Method | Arguments | Returns |
 |---|---|---|
-| `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}` |
-| `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "completed": int, "failed": int, "cancelled": int}` |
-| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics`.) |
+| `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}`. Supports `date_range` presets (`today`, `7days`, `30days`, `month`, `quarter`, `custom`). Rows and channels carry `planned_recipient_count` with row-level draft fallback for `recipient_count`. |
+| `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "paused": int, "completed": int, "failed": int, "cancelled": int}` |
+| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics` and `planned_recipient_count`. Top level includes `planned_recipient_count`.) |
 | `save_broadcast` | `doc, launch=0, individual_rows="[]", name=""` | `{"name": str, "status": str, "results": dict}`. Only user-editable fields are accepted. Status, counters and timestamps are set by the system. A new broadcast always starts as `Draft`. |
 | `launch_broadcast` | `name, individual_rows="[]"` | `dict[str, str]` (per-channel status) |
 | `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
@@ -219,6 +219,7 @@ The adapter dictionary must contain the following keys:
 | `delete_broadcasts` | `names` (JSON list string) | `{"deleted": list[str], "failed": list[dict]}` |
 | `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress and percentages) |
 | `get_broadcast_recipients` | `name, channel="", status="", search="", start=0, length=50, export=0` | `{"rows": list[dict], "total": int, "truncated": bool}` |
+| `get_broadcast_draft_recipients` | `name, search="", start=0, page_length=20` | `{"rows": list[dict], "total": int}` (preview contacts from linked Recipient List for Draft/Scheduled broadcasts). |
 | `clone_broadcast` | `name` | `dict` (new Draft Broadcast document). The user needs create access to every channel on the source broadcast. |
 
 ##### `msuite_campaigns.audience.api.v1.recipient_list`
