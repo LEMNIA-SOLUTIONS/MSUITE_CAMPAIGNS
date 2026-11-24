@@ -189,6 +189,64 @@ def _planned_recipient_count(
 	return cint(list_data.get("valid_phone_count")) or cint(list_data.get("valid_email_count")) or 0
 
 
+def _build_date_filters(
+	date_range: str = "",
+	date_from: str = "",
+	date_to: str = "",
+) -> list[list[str]]:
+	"""Build Frappe filter expressions on modified timestamp for date range presets.
+
+	Params:
+		date_range: Date range preset ('today', '7days', '30days', 'month', 'quarter', 'custom').
+		date_from: Start date string when date_range is 'custom'.
+		date_to: End date string when date_range is 'custom'.
+
+	Returns:
+		list[list[str]]: List of Frappe filter expressions.
+
+	Exceptions:
+		None. Gracefully ignores unparseable dates.
+
+	Side effects:
+		None.
+	"""
+	date_filters: list[list[str]] = []
+	if not date_range:
+		return date_filters
+
+	dr = str(date_range).strip().lower()
+	today_date = today()
+	t = getdate(today_date)
+	if dr in ("today", DATE_RANGE_TODAY):
+		date_filters.append(["modified", ">=", today_date])
+	elif dr in ("7days", DATE_RANGE_7DAYS):
+		date_filters.append(["modified", ">=", str(add_days(today_date, -7))])
+	elif dr in ("30days", DATE_RANGE_30DAYS):
+		date_filters.append(["modified", ">=", str(add_days(today_date, -30))])
+	elif dr in ("month", DATE_RANGE_MONTH):
+		month_start = str(t.replace(day=1))
+		date_filters.append(["modified", ">=", month_start])
+	elif dr in ("quarter", DATE_RANGE_QUARTER):
+		quarter_start_month = 1 + 3 * ((t.month - 1) // 3)
+		quarter_start = str(t.replace(month=quarter_start_month, day=1))
+		date_filters.append(["modified", ">=", quarter_start])
+	elif dr in ("custom", DATE_RANGE_CUSTOM):
+		if date_from and str(date_from).strip():
+			try:
+				valid_from = str(getdate(str(date_from).strip()))
+				date_filters.append(["modified", ">=", valid_from])
+			except Exception:
+				pass
+		if date_to and str(date_to).strip():
+			try:
+				valid_to = str(getdate(str(date_to).strip()))
+				date_filters.append(["modified", "<=", f"{valid_to} 23:59:59"])
+			except Exception:
+				pass
+
+	return date_filters
+
+
 def _loads(raw: Any, default: Any) -> Any:
 	"""Safely decode JSON string or return existing data structure or default.
 
@@ -270,6 +328,8 @@ def list_broadcasts(
 		st = str(status).strip()
 		if st == "inProgress":
 			parsed_filters.append(["status", "in", [STATUS_QUEUED, STATUS_IN_PROGRESS]])
+		elif st == STATUS_FAILED:
+			parsed_filters.append(["status", "in", [STATUS_FAILED, STATUS_PARTIALLY_FAILED]])
 		else:
 			parsed_filters.append(["status", "=", st])
 
@@ -289,35 +349,7 @@ def list_broadcasts(
 		parsed_filters.append(["name", "in", matching_parents])
 
 	if date_range:
-		dr = str(date_range).strip().lower()
-		today_date = today()
-		t = getdate(today_date)
-		if dr in ("today", DATE_RANGE_TODAY):
-			parsed_filters.append(["modified", ">=", today_date])
-		elif dr in ("7days", DATE_RANGE_7DAYS):
-			parsed_filters.append(["modified", ">=", str(add_days(today_date, -7))])
-		elif dr in ("30days", DATE_RANGE_30DAYS):
-			parsed_filters.append(["modified", ">=", str(add_days(today_date, -30))])
-		elif dr in ("month", DATE_RANGE_MONTH):
-			month_start = str(t.replace(day=1))
-			parsed_filters.append(["modified", ">=", month_start])
-		elif dr in ("quarter", DATE_RANGE_QUARTER):
-			quarter_start_month = 1 + 3 * ((t.month - 1) // 3)
-			quarter_start = str(t.replace(month=quarter_start_month, day=1))
-			parsed_filters.append(["modified", ">=", quarter_start])
-		elif dr in ("custom", DATE_RANGE_CUSTOM):
-			if date_from and str(date_from).strip():
-				try:
-					valid_from = str(getdate(str(date_from).strip()))
-					parsed_filters.append(["modified", ">=", valid_from])
-				except Exception:
-					pass
-			if date_to and str(date_to).strip():
-				try:
-					valid_to = str(getdate(str(date_to).strip()))
-					parsed_filters.append(["modified", "<=", f"{valid_to} 23:59:59"])
-				except Exception:
-					pass
+		parsed_filters.extend(_build_date_filters(date_range, date_from, date_to))
 
 	total_res = frappe.get_list(
 		"Broadcast",
@@ -365,12 +397,16 @@ def list_broadcasts(
 	if distinct_lists:
 		try:
 			if frappe.has_permission("Recipient List", "read"):
-				fetched_lists = frappe.get_all(
+				fetched_lists = frappe.get_list(
 					"Recipient List",
 					filters={"name": ["in", distinct_lists]},
 					fields=["name", "valid_phone_count", "valid_email_count"],
 				)
-				list_counts = {l["name"]: l for l in fetched_lists}
+				list_counts = {
+					l["name"]: l
+					for l in fetched_lists
+					if frappe.has_permission("Recipient List", "read", doc=l["name"])
+				}
 		except Exception:
 			list_counts = {}
 
@@ -493,11 +529,17 @@ def get_available_channels() -> dict:
 
 
 @frappe.whitelist()
-def get_broadcast_metrics() -> dict:
-	"""Return aggregate KPI counts of permitted Broadcast documents.
+def get_broadcast_metrics(
+	date_range: str = "",
+	date_from: str = "",
+	date_to: str = "",
+) -> dict:
+	"""Return aggregate KPI counts of permitted Broadcast documents, optionally filtered by date range.
 
 	Params:
-		None.
+		date_range: Optional date range preset ('today', '7days', '30days', 'month', 'quarter', 'custom').
+		date_from: Start date string when date_range is 'custom'.
+		date_to: End date string when date_range is 'custom'.
 
 	Returns:
 		dict: {
@@ -519,8 +561,13 @@ def get_broadcast_metrics() -> dict:
 	"""
 	frappe.has_permission("Broadcast", "read", throw=True)
 
+	filters: list[Any] = []
+	if date_range:
+		filters.extend(_build_date_filters(date_range, date_from, date_to))
+
 	rows = frappe.get_list(
 		"Broadcast",
+		filters=filters,
 		fields=["status", {"COUNT": "name", "as": "count"}],
 		group_by="status",
 	)

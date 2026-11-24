@@ -17,6 +17,7 @@ from frappe.utils import cint
 
 from msuite_campaigns.broadcast.constants import (
 	ALLOWED_TRANSITIONS,
+	PENDING_RECIPIENT_STATUSES,
 	STATUS_COMPLETED,
 	STATUS_FAILED,
 	STATUS_IN_PROGRESS,
@@ -72,12 +73,20 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 			SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) AS clicked_count,
 			SUM(CASE WHEN status = 'Unsubscribed' THEN 1 ELSE 0 END) AS unsubscribed_count,
 			COALESCE(SUM(retry_count), 0) AS retry_count,
-			SUM(CASE WHEN status IN ('Queued', 'Retrying', 'Sending') THEN 1 ELSE 0 END) AS queued_count
+			SUM(CASE WHEN status IN %(pending_statuses)s THEN 1 ELSE 0 END) AS queued_count
 		FROM `tabBroadcast Recipient`
 		WHERE `broadcast` = %(broadcast)s
 		  AND `channel` = %(channel)s
 	"""
-	raw_counts = frappe.db.sql(sql, {"broadcast": broadcast, "channel": channel}, as_dict=True)
+	raw_counts = frappe.db.sql(
+		sql,
+		{
+			"broadcast": broadcast,
+			"channel": channel,
+			"pending_statuses": PENDING_RECIPIENT_STATUSES,
+		},
+		as_dict=True,
+	)
 	row_data = raw_counts[0] if raw_counts else {}
 
 	counts = {

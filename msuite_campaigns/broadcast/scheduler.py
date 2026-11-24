@@ -18,6 +18,7 @@ from msuite_campaigns.broadcast.constants import (
 	SCHEDULER_BATCH_LIMIT,
 	STALE_QUEUED_MINUTES,
 	STATUS_FAILED,
+	STATUS_PARTIALLY_FAILED,
 	STATUS_QUEUED,
 )
 from msuite_campaigns.broadcast.hub import MAX_LAUNCH_ERROR_LENGTH
@@ -80,13 +81,15 @@ def fail_stale_queued_channels() -> int:
 				ERROR_NO_RECIPIENTS_QUEUED,
 				update_modified=False,
 			)
-			frappe.db.set_value(
-				"Broadcast",
-				row.broadcast,
-				"launch_error",
-				ERROR_NO_RECIPIENTS_QUEUED,
-				update_modified=False,
-			)
+			parent_status = frappe.db.get_value("Broadcast", row.broadcast, "status")
+			if parent_status in (STATUS_FAILED, STATUS_PARTIALLY_FAILED):
+				frappe.db.set_value(
+					"Broadcast",
+					row.broadcast,
+					"launch_error",
+					ERROR_NO_RECIPIENTS_QUEUED,
+					update_modified=False,
+				)
 			failed_count += 1
 		except Exception as exc:
 			frappe.log_error(
@@ -216,7 +219,8 @@ def start_due_channels() -> int:
 				parent_doc = frappe.get_doc("Broadcast", row.broadcast)
 				parent_status = rollup_status(parent_doc)
 				frappe.db.set_value("Broadcast", row.broadcast, "status", parent_status, update_modified=False)
-				frappe.db.set_value("Broadcast", row.broadcast, "launch_error", err_msg, update_modified=False)
+				if parent_status in (STATUS_FAILED, STATUS_PARTIALLY_FAILED):
+					frappe.db.set_value("Broadcast", row.broadcast, "launch_error", err_msg, update_modified=False)
 				frappe.db.commit()
 			except Exception:
 				frappe.db.rollback()

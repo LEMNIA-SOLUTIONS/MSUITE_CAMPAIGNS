@@ -31,6 +31,8 @@ from msuite_campaigns.broadcast.constants import (
 	CHANNEL_WHATSAPP,
 	STATUS_COMPLETED,
 	STATUS_DRAFT,
+	STATUS_FAILED,
+	STATUS_PARTIALLY_FAILED,
 	STATUS_PAUSED,
 	STATUS_SCHEDULED,
 )
@@ -395,3 +397,70 @@ class TestBroadcastPlannedRecipients(IntegrationTestCase):
 		quarter_names = [r["name"] for r in quarter_res["rows"]]
 		self.assertIn(bc_recent.name, quarter_names)
 		self.assertNotIn(bc_ancient.name, quarter_names)
+
+	def test_list_broadcasts_respects_doc_level_recipient_list_read_permission(self):
+		"""list_broadcasts planned_recipient_count evaluates to 0 when user lacks doc-level permission on recipient list."""
+		rl = self._make_recipient_list(valid_phone_count=42, valid_email_count=42)
+		bc = self._make_broadcast(
+			recipient_source="Recipient List",
+			recipient_list=rl.name,
+			channels=[{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT}],
+			status=STATUS_DRAFT,
+		)
+
+		original_has_perm = frappe.has_permission
+
+		def mock_has_perm(doctype, ptype="read", *args, **kwargs):
+			if doctype == "Recipient List":
+				doc = kwargs.get("doc") or (args[0] if args else None)
+				if doc and (doc == rl.name or getattr(doc, "name", None) == rl.name):
+					return False
+				return True
+			return original_has_perm(doctype, ptype, *args, **kwargs)
+
+		with patch("frappe.has_permission", side_effect=mock_has_perm):
+			res = broadcast_api.list_broadcasts(
+				filters=json.dumps([["name", "=", bc.name]])
+			)
+			self.assertEqual(len(res["rows"]), 1)
+			row = res["rows"][0]
+			self.assertEqual(row["planned_recipient_count"], 0)
+			self.assertEqual(row["recipient_count"], 0)
+			self.assertEqual(row["channels"][0]["planned_recipient_count"], 0)
+
+	def test_list_broadcasts_failed_filter_includes_partially_failed(self):
+		"""list_broadcasts status='Failed' includes both Failed and Partially Failed broadcasts."""
+		bc_failed = self._make_broadcast(status=STATUS_FAILED)
+		bc_partial = self._make_broadcast(status=STATUS_PARTIALLY_FAILED)
+		bc_comp = self._make_broadcast(status=STATUS_COMPLETED)
+
+		# Query status="Failed"
+		res_failed = broadcast_api.list_broadcasts(
+			status="Failed",
+			filters=json.dumps([["name", "in", [bc_failed.name, bc_partial.name, bc_comp.name]]]),
+		)
+		failed_names = [r["name"] for r in res_failed["rows"]]
+		self.assertIn(bc_failed.name, failed_names)
+		self.assertIn(bc_partial.name, failed_names)
+		self.assertNotIn(bc_comp.name, failed_names)
+
+		# Query status="Partially Failed" directly
+		res_partial = broadcast_api.list_broadcasts(
+			status="Partially Failed",
+			filters=json.dumps([["name", "in", [bc_failed.name, bc_partial.name, bc_comp.name]]]),
+		)
+		partial_names = [r["name"] for r in res_partial["rows"]]
+		self.assertIn(bc_partial.name, partial_names)
+		self.assertNotIn(bc_failed.name, partial_names)
+
+	def test_metrics_with_date_range(self):
+		"""get_broadcast_metrics respects date_range parameter."""
+		bc_recent = self._make_broadcast(status=STATUS_DRAFT)
+		bc_old = self._make_broadcast(status=STATUS_DRAFT)
+		past_60_days = str(add_days(today(), -60))
+		frappe.db.set_value("Broadcast", bc_old.name, "modified", past_60_days, update_modified=False)
+
+		all_metrics = broadcast_api.get_broadcast_metrics()
+		filtered_metrics = broadcast_api.get_broadcast_metrics(date_range="7days")
+		self.assertGreaterEqual(all_metrics["draft"], filtered_metrics["draft"])
+		self.assertGreaterEqual(filtered_metrics["draft"], 1)

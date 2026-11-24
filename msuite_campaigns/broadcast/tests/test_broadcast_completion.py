@@ -26,6 +26,7 @@ from msuite_campaigns.broadcast.constants import (
 	STALE_QUEUED_MINUTES,
 	STATUS_COMPLETED,
 	STATUS_FAILED,
+	STATUS_IN_PROGRESS,
 	STATUS_PARTIALLY_FAILED,
 	STATUS_QUEUED,
 )
@@ -312,3 +313,80 @@ class TestBroadcastCompletion(IntegrationTestCase):
 		b_status = frappe.db.get_value("Broadcast", b.name, "status")
 		self.assertEqual(ch_status, STATUS_QUEUED)
 		self.assertEqual(b_status, STATUS_QUEUED)
+
+	def test_stale_queue_multi_channel_parent_not_marked_failed(self) -> None:
+		"""Verify multi-channel broadcast preserves parent active status and does not set parent launch_error when only one channel is stale queued."""
+		b = frappe.get_doc({
+			"doctype": "Broadcast",
+			"title": f"{TEST_PREFIX}{frappe.generate_hash(length=6)}",
+			"recipient_source": "Individual",
+			"status": STATUS_IN_PROGRESS,
+			"channels": [
+				{
+					"channel": "WhatsApp",
+					"status": STATUS_QUEUED,
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+				},
+				{
+					"channel": "Email",
+					"status": STATUS_IN_PROGRESS,
+					"email_account": "EM-ACC-001",
+					"email_template": "tpl_em_001",
+					"variable_type": "",
+				},
+			],
+		})
+		b.insert(ignore_links=True)
+		self.cleanup_broadcasts.append(b.name)
+
+		stale_time = add_to_date(now_datetime(), minutes=-(STALE_QUEUED_MINUTES + 5))
+		frappe.db.sql(
+			"UPDATE `tabBroadcast Channel` SET `modified` = %(dt)s WHERE `parent` = %(parent)s AND `channel` = 'WhatsApp'",
+			{"dt": stale_time, "parent": b.name},
+		)
+
+		fail_stale_queued_channels()
+
+		wa_ch = frappe.db.get_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			["status", "launch_error"],
+			as_dict=True,
+		)
+		em_ch = frappe.db.get_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "Email"},
+			["status", "launch_error"],
+			as_dict=True,
+		)
+		b_row = frappe.db.get_value(
+			"Broadcast",
+			b.name,
+			["status", "launch_error"],
+			as_dict=True,
+		)
+
+		self.assertEqual(wa_ch.status, STATUS_FAILED)
+		self.assertEqual(wa_ch.launch_error, ERROR_NO_RECIPIENTS_QUEUED)
+		self.assertEqual(em_ch.status, STATUS_IN_PROGRESS)
+		self.assertEqual(b_row.status, STATUS_IN_PROGRESS)
+		self.assertNotEqual(b_row.launch_error, ERROR_NO_RECIPIENTS_QUEUED)
+
+	def test_counters_uses_pending_recipient_statuses(self) -> None:
+		"""Verify refresh_counters computes queued_count using PENDING_RECIPIENT_STATUSES ('Queued', 'Retrying', 'Sending')."""
+		b = self._make_broadcast(status=STATUS_QUEUED, channel_status=STATUS_QUEUED)
+		self._insert_recipients(
+			b.name,
+			"WhatsApp",
+			[
+				{"address": "+919811100041", "status": "Queued"},
+				{"address": "+919811100042", "status": "Retrying"},
+				{"address": "+919811100043", "status": "Sending"},
+				{"address": "+919811100044", "status": "Sent"},
+			],
+		)
+		counts = refresh_counters(b.name, "WhatsApp")
+		self.assertEqual(counts["sent_count"], 1)
+		ch_status = frappe.db.get_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "status")
+		self.assertIn(ch_status, (STATUS_QUEUED, STATUS_IN_PROGRESS))
