@@ -834,7 +834,7 @@ def duplicate_campaign(name: str, duplicate_children: int = 0) -> dict:
 					old_as = frappe.get_doc("Ad Set", old_as_meta.name)
 					new_as = frappe.copy_doc(old_as)
 					new_as.ad_campaign = new_ac.name
-					_clone_config_link(new_as, "targeting_configuration", "Ad Targeting")
+					_clone_config_link(new_as, "targeting", "Ad Targeting")
 					_clone_config_link(new_as, "budget_configuration", "Budget Configuration")
 					_clone_config_link(new_as, "conversion_configuration", "Conversion Configuration")
 					_clone_config_link(new_as, "tracking_configuration", "Tracking Configuration")
