@@ -1216,6 +1216,7 @@ def get_broadcast_draft_recipients(
 	search: str = "",
 	start: int = 0,
 	page_length: int = DEFAULT_DRAFT_PAGE_LENGTH,
+	channel: str = "",
 ) -> dict:
 	"""Fetch preview recipient rows from the linked Recipient List for a Draft/Scheduled broadcast.
 
@@ -1228,6 +1229,7 @@ def get_broadcast_draft_recipients(
 		search: Optional search term matching recipient full name or address.
 		start: 0-indexed pagination offset.
 		page_length: Number of rows to return, clamped to MAX_DRAFT_PAGE_LENGTH.
+		channel: Optional channel filter string (e.g. 'Email', 'WhatsApp') to prioritize channel-specific address.
 
 	Returns:
 		dict: {"rows": [{"recipient_name": str, "address": str}], "total": int}.
@@ -1298,11 +1300,15 @@ def get_broadcast_draft_recipients(
 		as_dict=True,
 	)
 
-	is_email_only = bool(b_doc.channels) and all(ch.channel == CHANNEL_EMAIL for ch in b_doc.channels)
+	if channel:
+		prefer_email = (channel == CHANNEL_EMAIL)
+	else:
+		prefer_email = bool(b_doc.channels) and all(ch.channel == CHANNEL_EMAIL for ch in b_doc.channels)
+
 	rows = []
 	for c in raw_contacts:
 		rec_name = c.get("full_name") or ""
-		if is_email_only:
+		if prefer_email:
 			addr = c.get("email_normalized") or c.get("raw_email") or c.get("phone_e164") or c.get("raw_phone") or ""
 		else:
 			addr = c.get("phone_e164") or c.get("raw_phone") or c.get("email_normalized") or c.get("raw_email") or ""

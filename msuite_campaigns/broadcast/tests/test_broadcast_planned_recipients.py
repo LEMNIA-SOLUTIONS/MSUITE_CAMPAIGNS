@@ -356,6 +356,54 @@ class TestBroadcastPlannedRecipients(IntegrationTestCase):
 		empty_res = broadcast_api.get_broadcast_draft_recipients(name=bc.name)
 		self.assertEqual(empty_res, {"rows": [], "total": 0})
 
+	def test_draft_recipients_mixed_channel_address_selection(self):
+		"""get_broadcast_draft_recipients formats address based on the requested channel parameter."""
+		contacts = [
+			{
+				"full_name": "Multi Channel User",
+				"phone_e164": "+15551234567",
+				"email_normalized": "multi@example.com",
+			},
+			{
+				"full_name": "Email Only User",
+				"phone_e164": "",
+				"email_normalized": "emailonly@example.com",
+			},
+			{
+				"full_name": "Phone Only User",
+				"phone_e164": "+15559876543",
+				"email_normalized": "",
+			},
+		]
+		rl = self._make_recipient_list(contacts=contacts)
+		bc = self._make_broadcast(
+			recipient_source="Recipient List",
+			recipient_list=rl.name,
+			channels=[
+				{"channel": CHANNEL_WHATSAPP, "status": STATUS_DRAFT},
+				{"channel": CHANNEL_EMAIL, "status": STATUS_DRAFT},
+			],
+			status=STATUS_DRAFT,
+		)
+
+		# 1. Querying with channel=CHANNEL_EMAIL returns email address for multi contact
+		email_res = broadcast_api.get_broadcast_draft_recipients(name=bc.name, channel=CHANNEL_EMAIL)
+		self.assertEqual(email_res["rows"][0]["address"], "multi@example.com")
+		self.assertEqual(email_res["rows"][1]["address"], "emailonly@example.com")
+		# Fallback to phone when email is missing
+		self.assertEqual(email_res["rows"][2]["address"], "+15559876543")
+
+		# 2. Querying with channel=CHANNEL_WHATSAPP returns phone address for multi contact
+		wa_res = broadcast_api.get_broadcast_draft_recipients(name=bc.name, channel=CHANNEL_WHATSAPP)
+		self.assertEqual(wa_res["rows"][0]["address"], "+15551234567")
+		# Fallback to email when phone is missing
+		self.assertEqual(wa_res["rows"][1]["address"], "emailonly@example.com")
+		self.assertEqual(wa_res["rows"][2]["address"], "+15559876543")
+
+		# 3. Querying with channel="" (empty) preserves multi-channel default (prefers phone when non-email channel exists)
+		empty_ch_res = broadcast_api.get_broadcast_draft_recipients(name=bc.name, channel="")
+		self.assertEqual(empty_ch_res["rows"][0]["address"], "+15551234567")
+
 	def test_metrics_include_paused(self):
 		"""get_broadcast_metrics includes 'paused' key and counts STATUS_PAUSED broadcasts."""
 		bc = self._make_broadcast(status=STATUS_PAUSED)

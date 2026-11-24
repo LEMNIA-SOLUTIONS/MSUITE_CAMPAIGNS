@@ -506,3 +506,21 @@ class TestBroadcastHub(IntegrationTestCase):
 		self.assertEqual(b_status, "Failed")
 		self.assertIn("SQS or worker queue failure", ch_err)
 
+	def test_start_channel_zero_chunks_does_not_call_refresh_counters_synchronously(self):
+		"""start_channel leaves counter refresh to enqueue.py without synchronous refresh_counters call."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			"status",
+			"Queued",
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "Queued", update_modified=False)
+
+		with patch("msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel", return_value=0) as mock_enqueue, \
+			patch("msuite_campaigns.broadcast.counters.refresh_counters") as mock_refresh:
+			start_channel(b.name, "WhatsApp")
+			mock_enqueue.assert_called_once_with(b.name, "WhatsApp")
+			mock_refresh.assert_not_called()
+
