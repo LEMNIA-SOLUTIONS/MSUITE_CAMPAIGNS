@@ -83,10 +83,8 @@ def fail_stale_queued_channels() -> int:
 			frappe.db.set_value(
 				"Broadcast",
 				row.broadcast,
-				{
-					"status": STATUS_FAILED,
-					"launch_error": ERROR_NO_RECIPIENTS_QUEUED,
-				},
+				"launch_error",
+				ERROR_NO_RECIPIENTS_QUEUED,
 				update_modified=False,
 			)
 			failed_count += 1
