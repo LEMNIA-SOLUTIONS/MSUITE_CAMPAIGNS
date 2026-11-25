@@ -240,7 +240,7 @@ class MarketingCampaign(Document):
 		already-set legacy value onto the new field for installs that
 		still write `whatsapp_blast` through old API callers.
 		"""
-		if self.whatsapp_blast:
+		if self.whatsapp_blast and frappe.db.exists("DocType", "Bulk WhatsApp Message"):
 			frappe.db.set_value(
 				"Bulk WhatsApp Message",
 				self.whatsapp_blast,

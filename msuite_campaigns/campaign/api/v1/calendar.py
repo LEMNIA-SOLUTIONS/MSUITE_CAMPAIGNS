@@ -73,7 +73,10 @@ def get_calendar_events(
 
 	valid_types = [
 		t for t in requested_types
-		if t in _ALL_TYPES and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read")
+		if t in _ALL_TYPES and (
+			(frappe.db.exists("DocType", _SOURCE_DATE_FIELDS[t][0]) and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read"))
+			or (t == "WhatsApp Message" and frappe.db.exists("DocType", "Broadcast") and frappe.has_permission("Broadcast", "read"))
+		)
 	]
 	if not valid_types:
 		return []
@@ -236,11 +239,56 @@ def reschedule_event(
 	start_date: str,
 	end_date: str,
 ) -> dict:
-	"""Update the source document's date fields and return the updated calendar event dict."""
-	if event_type not in _SOURCE_DATE_FIELDS:
-		frappe.throw(_(f"Unknown event type: {event_type}"))
+	"""Update the source document's date fields and return the updated calendar event dict.
 
-	doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
+	Params:
+		event_type: Calendar event type (e.g. 'Campaign', 'Social Post', 'Ad Campaign',
+			'WhatsApp Message', 'Task', 'Meeting', or 'Broadcast').
+		source_name: Name/ID of the source document.
+		start_date: ISO date/datetime string for start of event.
+		end_date: ISO date/datetime string for end of event.
+
+	Returns:
+		dict: Updated Campaign Calendar Event document as a dictionary.
+
+	Exceptions:
+		frappe.DoesNotExistError: If source document does not exist.
+		frappe.PermissionError: If user lacks write permission on source document.
+		frappe.ValidationError: If event_type is unknown or Broadcast status is not Draft/Scheduled.
+
+	Side effects:
+		Updates the source document's date fields, writes to DB, and resyncs
+		the projected Campaign Calendar Event row.
+	"""
+	if event_type == "Broadcast":
+		doctype = "Broadcast"
+		start_field = "scheduled_time"
+		end_field = "scheduled_time"
+	elif event_type not in _SOURCE_DATE_FIELDS:
+		frappe.throw(_(f"Unknown event type: {event_type}"))
+	else:
+		doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
+
+	if doctype == "Bulk WhatsApp Message":
+		from msuite_campaigns.broadcast.legacy import resolve
+
+		resolved = resolve("Bulk WhatsApp Message", source_name)
+		if resolved and frappe.db.exists("Broadcast", resolved):
+			doctype = "Broadcast"
+			source_name = resolved
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
+		elif not frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+			if frappe.db.exists("Broadcast", source_name):
+				doctype = "Broadcast"
+				start_field = "scheduled_time"
+				end_field = "scheduled_time"
+			else:
+				frappe.throw(_("Bulk WhatsApp Message {0} not found").format(source_name), frappe.DoesNotExistError)
+		elif not frappe.db.exists("Bulk WhatsApp Message", source_name) and frappe.db.exists("Broadcast", source_name):
+			doctype = "Broadcast"
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
 
 	if doctype == "CRM Task":
 		task = frappe.get_doc("CRM Task", source_name)
@@ -282,6 +330,9 @@ def reschedule_event(
 		frappe.throw(_(f"No write permission on {doctype} {source_name}"), frappe.PermissionError)
 
 	doc = frappe.get_doc(doctype, source_name)
+	if doctype == "Broadcast" and doc.status not in ("Draft", "Scheduled"):
+		frappe.throw(_("Cannot reschedule Broadcast in status {0}.").format(doc.status))
+
 	setattr(doc, start_field, start_date)
 	if start_field != end_field:
 		setattr(doc, end_field, end_date)

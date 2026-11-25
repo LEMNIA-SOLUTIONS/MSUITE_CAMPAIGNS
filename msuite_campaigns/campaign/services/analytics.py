@@ -28,6 +28,11 @@ from typing import Any
 import frappe
 from frappe.utils import add_days, getdate, today
 
+from msuite_campaigns.broadcast.constants import (
+	BROADCAST_CHANNEL_DOCTYPE,
+	BROADCAST_DOCTYPE,
+	BULK_WHATSAPP_MESSAGE_DOCTYPE,
+)
 from msuite_campaigns.campaign.services import attribution
 from msuite_campaigns.campaign.services.events import CampaignEvent, emit
 from msuite_campaigns.campaign.services.relationships import get_adapters
@@ -50,6 +55,8 @@ from msuite_core.utils.insight_keys import (
 # duplicate lifetime-totals code path — `spent` is meant to be the
 # cumulative figure paired with `budget`, not a windowed one.
 _LIFETIME_DAYS = 36500
+
+CHANNEL_TYPE_WHATSAPP = "WhatsApp"
 
 
 def check_campaign_setup(campaign: str) -> dict:
@@ -340,6 +347,18 @@ def get_campaign_dashboard(campaign: str, days: int = 30) -> dict:
 	except Exception:
 		frappe.log_error(title=f"AWS rollup merge failed for {campaign}", message=frappe.get_traceback())
 
+	try:
+		from msuite_campaigns.broadcast import rollup as broadcast_rollup
+
+		broadcast_metrics = broadcast_rollup.campaign_metrics(campaign, days=days)
+		modules = _merge_broadcast_metrics(modules, broadcast_metrics)
+	except ImportError:
+		pass
+	except Exception:
+		frappe.log_error(
+			title=f"Broadcast rollup merge failed for {campaign}", message=frappe.get_traceback()
+		)
+
 	summary = _cross_module_summary(modules)
 	attribution_summary = attribution.get_attribution_summary(campaign)
 
@@ -465,6 +484,103 @@ def sync_campaign_spend(campaign: str) -> float:
 # ==========================================================================
 # Cross-module summary
 # ==========================================================================
+
+
+def _merge_broadcast_metrics(modules: dict, broadcast_metrics: dict) -> dict:
+	"""Merge Broadcast metrics into the channel modules dict.
+
+	Sums metrics per channel key next to the old adapters' numbers without
+	double counting. Handles both existing adapter structures (with 'totals'
+	or 'metrics') and previously unrepresented channels.
+
+	Args:
+		modules: Channel breakdown dict from adapters and AWS rollup.
+		broadcast_metrics: Mapping of channel name to metrics dictionary.
+
+	Returns:
+		dict: Mutated modules dict containing merged metrics.
+
+	Raises:
+		None.
+
+	Side effects:
+		Mutates modules dict in place.
+	"""
+	for ch_name, b_data in (broadcast_metrics or {}).items():
+		if not isinstance(b_data, dict):
+			continue
+		bm = b_data.get("metrics") or {}
+		blasts_count = b_data.get("blasts") or 0
+
+		target_key = None
+		for k in modules.keys():
+			if k.lower() == ch_name.lower():
+				target_key = k
+				break
+		if not target_key:
+			target_key = ch_name.lower()
+			modules[target_key] = {
+				"channel": ch_name,
+				"label": ch_name,
+				"module": target_key,
+				"blasts": 0,
+				"metrics": {},
+				"totals": {},
+				"headline": {},
+				"engine": b_data.get("engine", "standard"),
+				"stale": b_data.get("stale", False),
+			}
+
+		target = modules[target_key]
+		if not isinstance(target, dict):
+			target = {}
+			modules[target_key] = target
+
+		# 1. Update/merge 'metrics' dict
+		tm = target.setdefault("metrics", {})
+		for m_key in ("sent", "delivered", "failed", "audience", "credits", "read"):
+			if m_key in bm:
+				if m_key not in tm:
+					if m_key in target.get("totals", {}):
+						tm[m_key] = target["totals"][m_key]
+					elif m_key == "audience" and "recipients" in target.get("totals", {}):
+						tm[m_key] = target["totals"]["recipients"]
+				tm[m_key] = (tm.get(m_key) or 0) + (bm.get(m_key) or 0)
+		sent = tm.get("sent") or 0
+		tm["delivery_rate"] = round((tm.get("delivered") or 0) / sent * 100, 1) if sent else 0
+
+		# 2. Update/merge 'totals' dict
+		tt = target.setdefault("totals", {})
+		tt["sent"] = (tt.get("sent") or 0) + (bm.get("sent") or 0)
+		tt["delivered"] = (tt.get("delivered") or 0) + (bm.get("delivered") or 0)
+		tt["failed"] = (tt.get("failed") or 0) + (bm.get("failed") or 0)
+		tt["read"] = (tt.get("read") or 0) + (bm.get("read") or 0)
+		tt["recipients"] = (tt.get("recipients") or 0) + (bm.get("audience") or 0)
+		t_sent = tt["sent"]
+		tt["delivery_rate"] = round(tt["delivered"] / t_sent * 100, 1) if t_sent else 0
+		t_deliv = tt["delivered"]
+		tt["read_rate"] = round(tt["read"] / t_deliv * 100, 1) if t_deliv else 0
+
+		# 3. Update 'headline' if present
+		if "headline" in target:
+			th = target["headline"]
+			th["Recipients"] = tt["recipients"]
+			th["Sent"] = tt["sent"]
+			th["Delivered"] = tt["delivered"]
+			th["Read"] = tt["read"]
+
+		# 4. Update blasts count
+		if "blasts" in target:
+			target["blasts"] = (target.get("blasts") or 0) + blasts_count
+		elif "bulk_messages" in target:
+			target["blasts"] = len(target.get("bulk_messages") or []) + blasts_count
+		else:
+			target["blasts"] = blasts_count
+
+		if target.get("engine") and target.get("engine") != b_data.get("engine"):
+			target["engine"] = "mixed"
+
+	return modules
 
 
 def _cross_module_summary(modules: dict[str, dict]) -> dict:
@@ -944,8 +1060,41 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 			pluck="name",
 		)
 
-	# WhatsApp Blasts
-	whatsapp_blasts = frappe.get_all("Bulk WhatsApp Message", filters={"campaign": campaign}, pluck="name")
+	# WhatsApp Blasts & Broadcasts
+	broadcast_names = []
+	if frappe.db.exists("DocType", "Broadcast"):
+		if frappe.db.exists("DocType", "Broadcast Channel"):
+			broadcast_names = frappe.db.sql_list(
+				"""
+				SELECT DISTINCT b.name
+				FROM `tabBroadcast` b
+				INNER JOIN `tabBroadcast Channel` bc ON bc.parent = b.name
+				WHERE b.campaign = %s AND bc.channel = 'WhatsApp'
+				""",
+				(campaign,),
+			)
+		else:
+			broadcast_names = frappe.get_all(BROADCAST_DOCTYPE, filters={"campaign": campaign}, pluck="name")
+
+	whatsapp_blasts = []
+	if frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
+		whatsapp_blasts = frappe.get_all(BULK_WHATSAPP_MESSAGE_DOCTYPE, filters={"campaign": campaign}, pluck="name")
+
+	# Compute repointed_bcs once before daily sync loop
+	repointed_bcs = set()
+	if broadcast_names and frappe.db.table_exists("Channel Message"):
+		repointed_bcs = set(
+			frappe.db.sql_list(
+				"""
+				SELECT DISTINCT reference_name
+				FROM `tabChannel Message`
+				WHERE reference_doctype = 'Broadcast'
+				  AND reference_name IN %(broadcasts)s
+				  AND channel_type = %(channel_type)s
+				""",
+				{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+			)
+		)
 
 	# Sync DAY rows
 	delta = timedelta(days=1)
@@ -958,6 +1107,8 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 			social_post_destinations,
 			whatsapp_blasts,
 			ad_campaign_names=ad_campaign_names,
+			broadcast_names=broadcast_names,
+			repointed_bcs=repointed_bcs,
 		)
 		current_date += delta
 
@@ -968,6 +1119,8 @@ def sync_marketing_campaign_insights(campaign: str, full: bool = False) -> None:
 		social_post_destinations,
 		whatsapp_blasts,
 		ad_campaign_names=ad_campaign_names,
+		broadcast_names=broadcast_names,
+		repointed_bcs=repointed_bcs,
 	)
 
 	# Roll up older days into week rows
@@ -981,10 +1134,14 @@ def _sync_campaign_day(
 	social_post_destinations: list[str],
 	whatsapp_blasts: list[str],
 	ad_campaign_names: list[str] | None = None,
+	broadcast_names: list[str] | None = None,
+	repointed_bcs: set[str] | None = None,
 ) -> None:
 	"""Compute and save a single DAY row for a campaign on date_str.
 
 	Under compacted storage, ads stats read from Ad Campaign DAY rows.
+	WhatsApp stats count Broadcast and Bulk WhatsApp Message records without
+	double counting migrated blasts.
 
 	Args:
 		campaign: Name of the Marketing Campaign.
@@ -993,6 +1150,7 @@ def _sync_campaign_day(
 		social_post_destinations: List of Social Post Destination names.
 		whatsapp_blasts: List of Bulk WhatsApp Message names.
 		ad_campaign_names: Optional list of Ad Campaign names linked to the campaign.
+		broadcast_names: Optional list of Broadcast names linked to the campaign.
 
 	Returns:
 		None.
@@ -1106,41 +1264,147 @@ def _sync_campaign_day(
 
 	# 3. WhatsApp daily
 	whatsapp_stats = {"recipients": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
-	if whatsapp_blasts:
-		whatsapp_stats["recipients"] = (
-			frappe.db.sql(
-				"""
-            SELECT COALESCE(SUM(recipient_count), 0)
-            FROM `tabBulk WhatsApp Message`
-            WHERE name IN %(blasts)s
-              AND DATE(creation) = %(date)s
-        """,
-				{"blasts": tuple(whatsapp_blasts), "date": date_str},
-			)[0][0]
-			or 0
-		)
 
-		msg_stats = frappe.db.sql(
-			"""
-            SELECT
-                SUM(CASE WHEN status IN ('sent','delivered','read') THEN 1 ELSE 0 END) AS sent,
-                SUM(CASE WHEN status IN ('delivered','read') THEN 1 ELSE 0 END) AS delivered,
-                SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
-            FROM `tabChannel Message`
-            WHERE reference_doctype = 'Bulk WhatsApp Message'
-              AND reference_name IN %(blasts)s
-              AND DATE(creation) = %(date)s
-        """,
-			{"blasts": tuple(whatsapp_blasts), "date": date_str},
-			as_dict=True,
-		)
-		if msg_stats and msg_stats[0]:
-			m = msg_stats[0]
-			whatsapp_stats["sent"] = int(m.get("sent") or 0)
-			whatsapp_stats["delivered"] = int(m.get("delivered") or 0)
-			whatsapp_stats["read"] = int(m.get("read_count") or 0)
-			whatsapp_stats["failed"] = int(m.get("failed") or 0)
+	# Resolve broadcast_names if not passed explicitly
+	if broadcast_names is None:
+		if frappe.db.exists("DocType", "Broadcast") and frappe.db.exists("DocType", "Broadcast Channel"):
+			broadcast_names = frappe.db.sql_list(
+				"""
+				SELECT DISTINCT b.name
+				FROM `tabBroadcast` b
+				INNER JOIN `tabBroadcast Channel` bc ON bc.parent = b.name
+				WHERE b.campaign = %s AND bc.channel = 'WhatsApp'
+				""",
+				(campaign,),
+			)
+		elif frappe.db.exists("DocType", "Broadcast"):
+			broadcast_names = frappe.get_all("Broadcast", filters={"campaign": campaign}, pluck="name")
+		else:
+			broadcast_names = []
+	else:
+		broadcast_names = list(broadcast_names)
+
+	from msuite_campaigns.broadcast.legacy import resolve
+
+	migrated_legacy = set()
+	for blast in (whatsapp_blasts or []):
+		resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
+		if resolved:
+			migrated_legacy.add(blast)
+			if resolved not in broadcast_names:
+				broadcast_names.append(resolved)
+
+	unmigrated_blasts = [b for b in (whatsapp_blasts or []) if b not in migrated_legacy]
+
+	if broadcast_names or unmigrated_blasts:
+		broadcast_recipients = 0
+		if broadcast_names and frappe.db.table_exists(BROADCAST_DOCTYPE):
+			if frappe.db.table_exists(BROADCAST_CHANNEL_DOCTYPE):
+				broadcast_recipients = (
+					frappe.db.sql(
+						"""
+						SELECT COALESCE(SUM(b_rec), 0) FROM (
+							SELECT COALESCE(MAX(bc.recipient_count), b.total_recipients, 0) as b_rec
+							FROM `tabBroadcast` b
+							LEFT JOIN `tabBroadcast Channel` bc ON bc.parent = b.name AND bc.channel = 'WhatsApp'
+							WHERE b.name IN %(broadcasts)s
+							  AND DATE(b.creation) = %(date)s
+							GROUP BY b.name
+						) t
+						""",
+						{"broadcasts": tuple(broadcast_names), "date": date_str},
+					)[0][0]
+					or 0
+				)
+			else:
+				broadcast_recipients = (
+					frappe.db.sql(
+						"""
+						SELECT COALESCE(SUM(total_recipients), 0)
+						FROM `tabBroadcast`
+						WHERE name IN %(broadcasts)s
+						  AND DATE(creation) = %(date)s
+						""",
+						{"broadcasts": tuple(broadcast_names), "date": date_str},
+					)[0][0]
+					or 0
+				)
+
+		legacy_recipients = 0
+		if unmigrated_blasts and frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
+			legacy_recipients = (
+				frappe.db.sql(
+					"""
+					SELECT COALESCE(SUM(recipient_count), 0)
+					FROM `tabBulk WhatsApp Message`
+					WHERE name IN %(blasts)s
+					  AND DATE(creation) = %(date)s
+					""",
+					{"blasts": tuple(unmigrated_blasts), "date": date_str},
+				)[0][0]
+				or 0
+			)
+
+		whatsapp_stats["recipients"] = int(broadcast_recipients + legacy_recipients)
+
+		conditions = []
+		params: dict = {"date": date_str}
+		if broadcast_names:
+			conditions.append(f"(reference_doctype = '{BROADCAST_DOCTYPE}' AND reference_name IN %(broadcasts)s)")
+			params["broadcasts"] = tuple(broadcast_names)
+
+		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
+		if repointed_bcs is None:
+			repointed_bcs = set()
+			if broadcast_names and frappe.db.table_exists("Channel Message"):
+				repointed_bcs = set(
+					frappe.db.sql_list(
+						"""
+						SELECT DISTINCT reference_name
+						FROM `tabChannel Message`
+						WHERE reference_doctype = 'Broadcast'
+						  AND reference_name IN %(broadcasts)s
+						  AND channel_type = %(channel_type)s
+						""",
+						{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+					)
+				)
+
+		legacy_cm_blasts = list(unmigrated_blasts)
+		for blast in migrated_legacy:
+			resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
+			if resolved and resolved not in repointed_bcs:
+				legacy_cm_blasts.append(blast)
+
+		if legacy_cm_blasts:
+			conditions.append(f"(reference_doctype = '{BULK_WHATSAPP_MESSAGE_DOCTYPE}' AND reference_name IN %(blasts)s)")
+			params["blasts"] = tuple(legacy_cm_blasts)
+
+		if conditions and frappe.db.table_exists("Channel Message"):
+			where_clause = " OR ".join(conditions)
+			params["channel_type"] = CHANNEL_TYPE_WHATSAPP
+			msg_stats = frappe.db.sql(
+				f"""
+				SELECT
+					SUM(CASE WHEN status IN ('sent','delivered','read') THEN 1 ELSE 0 END) AS sent,
+					SUM(CASE WHEN status IN ('delivered','read') THEN 1 ELSE 0 END) AS delivered,
+					SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
+					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+				FROM `tabChannel Message`
+				WHERE reference_doctype IN ('{BROADCAST_DOCTYPE}', '{BULK_WHATSAPP_MESSAGE_DOCTYPE}')
+				  AND channel_type = %(channel_type)s
+				  AND ({where_clause})
+				  AND DATE(creation) = %(date)s
+				""",
+				params,
+				as_dict=True,
+			)
+			if msg_stats and msg_stats[0]:
+				m = msg_stats[0]
+				whatsapp_stats["sent"] = int(m.get("sent") or 0)
+				whatsapp_stats["delivered"] = int(m.get("delivered") or 0)
+				whatsapp_stats["read"] = int(m.get("read_count") or 0)
+				whatsapp_stats["failed"] = int(m.get("failed") or 0)
 
 	# 4. Attribution daily
 	leads_count = 0
@@ -1222,10 +1486,14 @@ def _sync_campaign_lifetime(
 	social_post_destinations: list[str],
 	whatsapp_blasts: list[str],
 	ad_campaign_names: list[str] | None = None,
+	broadcast_names: list[str] | None = None,
+	repointed_bcs: set[str] | None = None,
 ) -> None:
 	"""Compute and upsert the single LIFETIME row for a campaign across all channels.
 
 	Under compacted storage, ads stats read from Ad Campaign DAY and WEEK rows.
+	WhatsApp stats count Broadcast and Bulk WhatsApp Message records without
+	double counting migrated blasts.
 
 	Args:
 		campaign: Name of the Marketing Campaign.
@@ -1233,6 +1501,7 @@ def _sync_campaign_lifetime(
 		social_post_destinations: List of Social Post Destination names.
 		whatsapp_blasts: List of Bulk WhatsApp Message names.
 		ad_campaign_names: Optional list of Ad Campaign names linked to the campaign.
+		broadcast_names: Optional list of Broadcast names linked to the campaign.
 
 	Returns:
 		None.
@@ -1335,39 +1604,143 @@ def _sync_campaign_lifetime(
 
 	# 3. WhatsApp lifetime
 	whatsapp_stats = {"recipients": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
-	if whatsapp_blasts:
-		whatsapp_stats["recipients"] = (
-			frappe.db.sql(
-				"""
-            SELECT COALESCE(SUM(recipient_count), 0)
-            FROM `tabBulk WhatsApp Message`
-            WHERE name IN %(blasts)s
-        """,
-				{"blasts": tuple(whatsapp_blasts)},
-			)[0][0]
-			or 0
-		)
 
-		msg_stats = frappe.db.sql(
-			"""
-            SELECT
-                SUM(CASE WHEN status IN ('sent','delivered','read') THEN 1 ELSE 0 END) AS sent,
-                SUM(CASE WHEN status IN ('delivered','read') THEN 1 ELSE 0 END) AS delivered,
-                SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
-            FROM `tabChannel Message`
-            WHERE reference_doctype = 'Bulk WhatsApp Message'
-              AND reference_name IN %(blasts)s
-        """,
-			{"blasts": tuple(whatsapp_blasts)},
-			as_dict=True,
-		)
-		if msg_stats and msg_stats[0]:
-			m = msg_stats[0]
-			whatsapp_stats["sent"] = int(m.get("sent") or 0)
-			whatsapp_stats["delivered"] = int(m.get("delivered") or 0)
-			whatsapp_stats["read"] = int(m.get("read_count") or 0)
-			whatsapp_stats["failed"] = int(m.get("failed") or 0)
+	# Resolve broadcast_names if not passed explicitly
+	if broadcast_names is None:
+		if frappe.db.exists("DocType", "Broadcast") and frappe.db.exists("DocType", "Broadcast Channel"):
+			broadcast_names = frappe.db.sql_list(
+				"""
+				SELECT DISTINCT b.name
+				FROM `tabBroadcast` b
+				INNER JOIN `tabBroadcast Channel` bc ON bc.parent = b.name
+				WHERE b.campaign = %s AND bc.channel = 'WhatsApp'
+				""",
+				(campaign,),
+			)
+		elif frappe.db.exists("DocType", "Broadcast"):
+			broadcast_names = frappe.get_all("Broadcast", filters={"campaign": campaign}, pluck="name")
+		else:
+			broadcast_names = []
+	else:
+		broadcast_names = list(broadcast_names)
+
+	from msuite_campaigns.broadcast.legacy import resolve
+
+	migrated_legacy = set()
+	for blast in (whatsapp_blasts or []):
+		resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
+		if resolved:
+			migrated_legacy.add(blast)
+			if resolved not in broadcast_names:
+				broadcast_names.append(resolved)
+
+	unmigrated_blasts = [b for b in (whatsapp_blasts or []) if b not in migrated_legacy]
+
+	if broadcast_names or unmigrated_blasts:
+		broadcast_recipients = 0
+		if broadcast_names and frappe.db.table_exists(BROADCAST_DOCTYPE):
+			if frappe.db.table_exists(BROADCAST_CHANNEL_DOCTYPE):
+				broadcast_recipients = (
+					frappe.db.sql(
+						"""
+						SELECT COALESCE(SUM(b_rec), 0) FROM (
+							SELECT COALESCE(MAX(bc.recipient_count), b.total_recipients, 0) as b_rec
+							FROM `tabBroadcast` b
+							LEFT JOIN `tabBroadcast Channel` bc ON bc.parent = b.name AND bc.channel = 'WhatsApp'
+							WHERE b.name IN %(broadcasts)s
+							GROUP BY b.name
+						) t
+						""",
+						{"broadcasts": tuple(broadcast_names)},
+					)[0][0]
+					or 0
+				)
+			else:
+				broadcast_recipients = (
+					frappe.db.sql(
+						"""
+						SELECT COALESCE(SUM(total_recipients), 0)
+						FROM `tabBroadcast`
+						WHERE name IN %(broadcasts)s
+						""",
+						{"broadcasts": tuple(broadcast_names)},
+					)[0][0]
+					or 0
+				)
+
+		legacy_recipients = 0
+		if unmigrated_blasts and frappe.db.exists("DocType", BULK_WHATSAPP_MESSAGE_DOCTYPE):
+			legacy_recipients = (
+				frappe.db.sql(
+					"""
+					SELECT COALESCE(SUM(recipient_count), 0)
+					FROM `tabBulk WhatsApp Message`
+					WHERE name IN %(blasts)s
+					""",
+					{"blasts": tuple(unmigrated_blasts)},
+				)[0][0]
+				or 0
+			)
+
+		whatsapp_stats["recipients"] = int(broadcast_recipients + legacy_recipients)
+
+		conditions = []
+		params: dict = {}
+		if broadcast_names:
+			conditions.append(f"(reference_doctype = '{BROADCAST_DOCTYPE}' AND reference_name IN %(broadcasts)s)")
+			params["broadcasts"] = tuple(broadcast_names)
+
+		# For legacy blasts: include unmigrated blasts, plus migrated blasts whose messages were not repointed
+		if repointed_bcs is None:
+			repointed_bcs = set()
+			if broadcast_names and frappe.db.table_exists("Channel Message"):
+				repointed_bcs = set(
+					frappe.db.sql_list(
+						"""
+						SELECT DISTINCT reference_name
+						FROM `tabChannel Message`
+						WHERE reference_doctype = 'Broadcast'
+						  AND reference_name IN %(broadcasts)s
+						  AND channel_type = %(channel_type)s
+						""",
+						{"broadcasts": tuple(broadcast_names), "channel_type": CHANNEL_TYPE_WHATSAPP},
+					)
+				)
+
+		legacy_cm_blasts = list(unmigrated_blasts)
+		for blast in migrated_legacy:
+			resolved = resolve(BULK_WHATSAPP_MESSAGE_DOCTYPE, blast)
+			if resolved and resolved not in repointed_bcs:
+				legacy_cm_blasts.append(blast)
+
+		if legacy_cm_blasts:
+			conditions.append(f"(reference_doctype = '{BULK_WHATSAPP_MESSAGE_DOCTYPE}' AND reference_name IN %(blasts)s)")
+			params["blasts"] = tuple(legacy_cm_blasts)
+
+		if conditions and frappe.db.table_exists("Channel Message"):
+			where_clause = " OR ".join(conditions)
+			params["channel_type"] = CHANNEL_TYPE_WHATSAPP
+			msg_stats = frappe.db.sql(
+				f"""
+				SELECT
+					SUM(CASE WHEN status IN ('sent','delivered','read') THEN 1 ELSE 0 END) AS sent,
+					SUM(CASE WHEN status IN ('delivered','read') THEN 1 ELSE 0 END) AS delivered,
+					SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) AS read_count,
+					SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+				FROM `tabChannel Message`
+				WHERE reference_doctype IN ('{BROADCAST_DOCTYPE}', '{BULK_WHATSAPP_MESSAGE_DOCTYPE}')
+				  AND channel_type = %(channel_type)s
+				  AND ({where_clause})
+				""",
+				params,
+				as_dict=True,
+			)
+			if msg_stats and msg_stats[0]:
+				m = msg_stats[0]
+				whatsapp_stats["sent"] = int(m.get("sent") or 0)
+				whatsapp_stats["delivered"] = int(m.get("delivered") or 0)
+				whatsapp_stats["read"] = int(m.get("read_count") or 0)
+				whatsapp_stats["failed"] = int(m.get("failed") or 0)
 
 	# 4. Attribution lifetime
 	leads_count = 0

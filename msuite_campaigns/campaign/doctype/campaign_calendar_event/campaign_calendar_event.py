@@ -67,6 +67,21 @@ _COLOR_MAP: dict[tuple[str, str], str] = {
 	("WhatsApp Message", "completed"): "wa-completed",
 	("WhatsApp Message", "partially failed"): "wa-partial",
 	("WhatsApp Message", "cancelled"): "wa-cancelled",
+	("WhatsApp Message", "failed"): "wa-cancelled",
+	("WhatsApp Message", "paused"): "wa-queued",
+}
+
+
+_BROADCAST_STATUS_TO_WA_STATUS = {
+	"Draft": "Draft",
+	"Scheduled": "Scheduled",
+	"Queued": "Queued",
+	"In Progress": "In Progress",
+	"Paused": "Queued",
+	"Completed": "Completed",
+	"Partially Failed": "Partially Failed",
+	"Failed": "Cancelled",
+	"Cancelled": "Cancelled",
 }
 
 
@@ -160,11 +175,82 @@ def _from_whatsapp(doc) -> dict:
 	}
 
 
+def _from_broadcast(doc) -> dict | None:
+	"""Serialise a Broadcast into a Campaign Calendar Event dict.
+
+	Only Broadcasts that have a WhatsApp channel row project to the
+	calendar (as event_type 'WhatsApp Message'). Broadcasts without
+	a WhatsApp channel return None and do not appear.
+
+	Broadcasts that are migrated copies of an existing legacy record
+	(legacy_doctype and legacy_name point to an existing legacy record)
+	are suppressed from projection while the legacy record exists.
+
+	Args:
+		doc: Broadcast Document instance.
+
+	Returns:
+		dict | None: Calendar event payload or None if WhatsApp channel absent
+			or legacy source still exists.
+
+	Raises:
+		None.
+
+	Side effects:
+		None.
+	"""
+	legacy_doctype = getattr(doc, "legacy_doctype", None) or (
+		doc.get("legacy_doctype") if isinstance(doc, dict) else None
+	)
+	legacy_name = getattr(doc, "legacy_name", None) or (
+		doc.get("legacy_name") if isinstance(doc, dict) else None
+	)
+	if legacy_doctype and legacy_name:
+		if frappe.db.table_exists(legacy_doctype) and frappe.db.exists(legacy_doctype, legacy_name):
+			return None
+
+	channels = getattr(doc, "channels", []) or []
+	wa_row = None
+	for ch in channels:
+		if getattr(ch, "channel", None) == "WhatsApp":
+			wa_row = ch
+			break
+
+	if not wa_row:
+		return None
+
+	status_raw = doc.status or "Draft"
+	mapped_status = _BROADCAST_STATUS_TO_WA_STATUS.get(status_raw, status_raw)
+
+	recipient_count = getattr(doc, "total_recipients", 0) or 0
+	sent_count = getattr(wa_row, "sent_count", 0) or 0
+	template = getattr(wa_row, "whatsapp_template", "") or ""
+
+	return {
+		"event_type": "WhatsApp Message",
+		"source_name": doc.name,
+		"title": doc.title or doc.name,
+		"status": mapped_status,
+		"campaign": doc.campaign or None,
+		"start_date": doc.scheduled_time,
+		"end_date": doc.scheduled_time,
+		"platform": "WhatsApp",
+		"extra_json": json.dumps(
+			{
+				"recipient_count": recipient_count,
+				"sent_count": sent_count,
+				"template": template,
+			}
+		),
+	}
+
+
 _SERIALISERS = {
 	"Marketing Campaign": _from_campaign,
 	"Social Post": _from_social_post,
 	"Ad Campaign": _from_ad_campaign,
 	"Bulk WhatsApp Message": _from_whatsapp,
+	"Broadcast": _from_broadcast,
 }
 
 _EVENT_TYPE_MAP = {
@@ -172,6 +258,7 @@ _EVENT_TYPE_MAP = {
 	"Social Post": "Social Post",
 	"Ad Campaign": "Ad Campaign",
 	"Bulk WhatsApp Message": "WhatsApp Message",
+	"Broadcast": "WhatsApp Message",
 }
 
 
@@ -194,6 +281,10 @@ def sync_from_source(doctype: str, source_name: str) -> str | None:
 		return None
 
 	data = serialiser(doc)
+	if data is None:
+		purge_source(doctype, source_name)
+		return None
+
 	event_type = _EVENT_TYPE_MAP[doctype]
 	data["color_hint"] = _color_hint(event_type, data.get("status", ""))
 

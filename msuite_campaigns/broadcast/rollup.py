@@ -1,0 +1,376 @@
+# Copyright (c) 2026, MSuite and contributors
+# For license information, please see license.txt
+
+"""Rollup and metrics calculation for Broadcast channels and Marketing Campaigns.
+
+Calculates aggregated delivery and engagement statistics for single Broadcast channels
+as well as whole Marketing Campaigns, across both Standard (MariaDB counters) and
+AWS (DynamoDB analytics) engines with graceful degradation on network failures.
+"""
+
+from __future__ import annotations
+
+import frappe
+from frappe import _
+
+from msuite_campaigns.aws_pipeline import rollup as aws_rollup
+from msuite_campaigns.broadcast.aws import dynamo_campaign_id
+
+
+def channel_metrics(
+	broadcast: str | Any,
+	channel: str,
+	days: int = 30,
+	broadcast_doc: Any = None,
+	dynamo_cache: dict[str, Any] | None = None,
+) -> dict:
+	"""Compute aggregated delivery metrics for a single broadcast channel.
+
+	Standard-engine rows read counters directly from the Broadcast Channel child row.
+	AWS-engine rows query DynamoDB via aws_pipeline.rollup.fetch, soft-failing to zeros
+	on provider/network errors so that dashboards do not 500.
+
+	Args:
+		broadcast: Name of the Broadcast document, or Broadcast document instance.
+		channel: Channel name ("WhatsApp", "Email", or "SMS").
+		days: Lookback window in days (kept for parity; DynamoDB SUMMARY is running total).
+		broadcast_doc: Optional pre-loaded Broadcast document to avoid redundant DB queries.
+		dynamo_cache: Optional dict cache of DynamoDB metrics within the current request context.
+
+	Returns:
+		dict: Metric payload mirroring aws_pipeline.rollup.rollup() shape plus 'engine':
+			{
+				"channel": str,
+				"label": str,
+				"blasts": int,
+				"metrics": {
+					"sent": int,
+					"delivered": int,
+					"failed": int,
+					"audience": int,
+					"credits": float,
+					"delivery_rate": float,
+					"read": int (WhatsApp only)
+				},
+				"engine": "standard" | "aws",
+				"stale": bool,
+				"retried": int
+			}
+
+	Raises:
+		frappe.ValidationError: If the Broadcast document or Channel row is not found.
+
+	Side effects:
+		None.
+	"""
+	if broadcast_doc is None:
+		if isinstance(broadcast, str):
+			broadcast_doc = frappe.get_doc("Broadcast", broadcast)
+		else:
+			broadcast_doc = broadcast
+
+	broadcast_name = getattr(broadcast_doc, "name", None) or (
+		broadcast if isinstance(broadcast, str) else ""
+	)
+
+	channel_row = None
+	channels = getattr(broadcast_doc, "channels", None) or (
+		broadcast_doc.get("channels") if isinstance(broadcast_doc, dict) else []
+	)
+	for ch in channels or []:
+		ch_name = getattr(ch, "channel", None) or (
+			ch.get("channel") if isinstance(ch, dict) else None
+		)
+		if ch_name == channel:
+			channel_row = ch
+			break
+
+	if not channel_row:
+		frappe.throw(_("Channel '{0}' not found on Broadcast '{1}'.").format(channel, broadcast_name))
+
+	engine = (channel_row.delivery_engine or "AWS").lower()
+	audience = int(channel_row.recipient_count or 0)
+	credits_val = float(channel_row.actual_credits or channel_row.estimated_credits or 0)
+
+	if engine == "standard":
+		sent = int(channel_row.sent_count or 0)
+		delivered = int(channel_row.delivered_count or 0)
+		failed = int(channel_row.failed_count or 0)
+		read = int(channel_row.read_count or 0)
+		retried = int(channel_row.retry_count or 0)
+		delivery_rate = round(delivered / sent * 100, 1) if sent else 0
+
+		metrics = {
+			"sent": sent,
+			"delivered": delivered,
+			"failed": failed,
+			"audience": audience,
+			"credits": credits_val,
+			"delivery_rate": delivery_rate,
+		}
+		if channel.lower() == "whatsapp":
+			metrics["read"] = read
+
+		return {
+			"channel": channel,
+			"label": channel,
+			"blasts": 1,
+			"metrics": metrics,
+			"engine": "standard",
+			"stale": False,
+			"retried": retried,
+		}
+
+	# AWS engine
+	campaign_id = dynamo_campaign_id(broadcast_doc, channel)
+	data = None
+	if dynamo_cache is not None and campaign_id in dynamo_cache:
+		data = dynamo_cache[campaign_id]
+	else:
+		try:
+			data = aws_rollup.fetch(campaign_id)
+		except Exception:
+			frappe.log_error(
+				title=f"Broadcast AWS analytics read failed for {campaign_id}",
+				message=frappe.get_traceback(),
+			)
+			data = None
+		if dynamo_cache is not None:
+			dynamo_cache[campaign_id] = data
+
+	reachable = data is not None
+	data_dict = data or {}
+	totals = {
+		"sent": int(data_dict.get("sent_count") or 0),
+		"delivered": int(data_dict.get("delivered_count") or 0),
+		"failed": int(data_dict.get("failed_count") or 0),
+		"read": int(data_dict.get("read_count") or 0),
+		"retried": int(data_dict.get("retried_count") or 0),
+	}
+
+	sent = totals["sent"]
+	delivered = totals["delivered"]
+	failed = totals["failed"]
+	retried = totals["retried"]
+	delivery_rate = round(delivered / sent * 100, 1) if sent else 0
+
+	metrics = {
+		"sent": sent,
+		"delivered": delivered,
+		"failed": failed,
+		"audience": audience,
+		"credits": credits_val,
+		"delivery_rate": delivery_rate,
+	}
+	if channel.lower() == "whatsapp":
+		metrics["read"] = totals["read"]
+
+	return {
+		"channel": channel,
+		"label": channel,
+		"blasts": 1,
+		"metrics": metrics,
+		"engine": "aws",
+		"stale": not reachable,
+		"retried": retried,
+	}
+
+
+def _combine_channel_metrics(
+	existing: dict, incoming: dict, deduplicate_aws: bool = False
+) -> dict:
+	"""Sum metrics of two rollups for the same channel, recomputing delivery_rate.
+
+	Args:
+		existing: Base channel metric dict.
+		incoming: Incoming channel metric dict to merge.
+		deduplicate_aws: If True, incoming AWS delivery counters (sent, delivered, etc.)
+			are not added because they share the same DynamoDB counter; only audience,
+			credits, and blast count are incremented.
+
+	Returns:
+		dict: Merged channel metrics.
+
+	Exceptions:
+		None.
+
+	Side effects:
+		None.
+	"""
+	em = existing.get("metrics") or {}
+	im = incoming.get("metrics") or {}
+	merged_metrics = dict(em)
+
+	if deduplicate_aws:
+		# Audience and credits come from MariaDB and should always be summed
+		for key in ("audience", "credits"):
+			if key in em or key in im:
+				merged_metrics[key] = (em.get(key) or 0) + (im.get(key) or 0)
+	else:
+		for key in ("sent", "delivered", "failed", "audience", "credits", "read"):
+			if key in em or key in im:
+				merged_metrics[key] = (em.get(key) or 0) + (im.get(key) or 0)
+
+	sent = merged_metrics.get("sent") or 0
+	merged_metrics["delivery_rate"] = (
+		round((merged_metrics.get("delivered") or 0) / sent * 100, 1) if sent else 0
+	)
+
+	existing_engine = existing.get("engine")
+	incoming_engine = incoming.get("engine")
+	if existing_engine != incoming_engine:
+		engine = "mixed"
+	else:
+		engine = existing_engine
+
+	retried_delta = 0 if deduplicate_aws else (incoming.get("retried") or 0)
+
+	return {
+		**existing,
+		"blasts": (existing.get("blasts") or 0) + (incoming.get("blasts") or 0),
+		"metrics": merged_metrics,
+		"engine": engine,
+		"stale": bool(existing.get("stale") or incoming.get("stale")),
+		"retried": (existing.get("retried") or 0) + retried_delta,
+	}
+
+
+def campaign_metrics(campaign: str, days: int = 30) -> dict[str, dict]:
+	"""Return merged channel metrics over all Broadcast Channel rows for a Marketing Campaign.
+
+	Iterates every Broadcast linked to the given campaign, computes or aggregates metrics
+	for each channel, deduplicating DynamoDB queries where appropriate, and merges results
+	into a single dictionary keyed by channel name.
+
+	Broadcasts that are migrated copies of legacy records (legacy_doctype and legacy_name
+	pointing to an existing legacy record) are excluded from aggregation to prevent double
+	counting against legacy adapters.
+
+	Avoids N+1 document loads by batching Broadcast and Broadcast Channel queries in bulk,
+	and avoids redundant external DynamoDB HTTP requests by caching fetch responses across
+	channels sharing the same campaign key.
+
+	Args:
+		campaign: Name of the Marketing Campaign document.
+		days: Lookback window in days (defaults to 30).
+
+	Returns:
+		dict[str, dict]: Mapping of channel name to merged metrics dictionary.
+
+	Exceptions:
+		None.
+
+	Side effects:
+		None.
+	"""
+	broadcasts = frappe.get_all(
+		"Broadcast",
+		filters={"campaign": campaign},
+		fields=["name", "campaign", "legacy_doctype", "legacy_name"],
+	)
+
+	if not broadcasts:
+		return {}
+
+	# Batch check legacy existence to exclude migrated copies of existing legacy records (C-01)
+	legacy_map: dict[str, list[str]] = {}
+	for b in broadcasts:
+		dt = b.get("legacy_doctype")
+		nm = b.get("legacy_name")
+		if dt and nm:
+			legacy_map.setdefault(dt, []).append(nm)
+
+	existing_legacy: set[tuple[str, str]] = set()
+	for dt, names in legacy_map.items():
+		if frappe.db.table_exists(dt):
+			existing_names = set(
+				frappe.get_all(dt, filters={"name": ["in", names]}, pluck="name")
+			)
+			for nm in existing_names:
+				existing_legacy.add((dt, nm))
+
+	valid_broadcasts = [
+		b
+		for b in broadcasts
+		if not (
+			b.get("legacy_doctype")
+			and b.get("legacy_name")
+			and (b.get("legacy_doctype"), b.get("legacy_name")) in existing_legacy
+		)
+	]
+
+	if not valid_broadcasts:
+		return {}
+
+	valid_names = [b["name"] for b in valid_broadcasts]
+	broadcast_by_name = {b["name"]: b for b in valid_broadcasts}
+
+	# Fetch Broadcast Channel rows for all broadcasts of the campaign in ONE query (I-03)
+	channel_rows = frappe.get_all(
+		"Broadcast Channel",
+		filters={"parent": ["in", valid_names]},
+		fields=[
+			"name",
+			"parent",
+			"channel",
+			"delivery_engine",
+			"recipient_count",
+			"sent_count",
+			"delivered_count",
+			"failed_count",
+			"read_count",
+			"retry_count",
+			"actual_credits",
+			"estimated_credits",
+		],
+	)
+
+	results: dict[str, dict] = {}
+	# Track AWS dynamo keys already fetched for this campaign to prevent double-counting
+	seen_aws_dynamo_keys: set[str] = set()
+	# Cache DynamoDB fetch responses per campaign_id to prevent redundant external HTTP calls
+	dynamo_cache: dict[str, Any] = {}
+
+	for ch in channel_rows:
+		channel_name = ch.channel
+		if not channel_name:
+			continue
+
+		b_name = ch.parent
+		b_info = broadcast_by_name.get(b_name)
+		if not b_info:
+			continue
+
+		engine = (ch.delivery_engine or "AWS").lower()
+		proxy_doc = frappe._dict(
+			name=b_name,
+			campaign=b_info.get("campaign") or campaign,
+			legacy_name=b_info.get("legacy_name"),
+			channels=[ch],
+		)
+
+		dynamo_id = dynamo_campaign_id(proxy_doc, channel_name)
+
+		dedup_aws = False
+		if engine == "aws":
+			if dynamo_id in seen_aws_dynamo_keys:
+				dedup_aws = True
+			else:
+				seen_aws_dynamo_keys.add(dynamo_id)
+
+		m = channel_metrics(
+			b_name,
+			channel_name,
+			days=days,
+			broadcast_doc=proxy_doc,
+			dynamo_cache=dynamo_cache,
+		)
+
+		if channel_name not in results:
+			results[channel_name] = m
+		else:
+			results[channel_name] = _combine_channel_metrics(
+				results[channel_name], m, deduplicate_aws=dedup_aws
+			)
+
+	return results

@@ -352,7 +352,7 @@ class TestAgentFacadeErrors(unittest.TestCase):
             age_min=25,
             age_max=45,
             genders="All",
-            audience_locations=[
+            locations=[
                 {"location_type": "country", "meta_key": "IN", "country_code": "IN", "display_name": "India"}
             ],
             # creative step fields
