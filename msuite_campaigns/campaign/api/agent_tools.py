@@ -18,11 +18,9 @@ from msuite_campaigns.campaign.api.v1 import composer as campaign_composer
 from msuite_core.exceptions import PublishError as _AdPublishError
 
 
-def _slugify(text: str) -> str:
-	"""Convert a display name to a safe UTM-compatible string.
-	'Summer Launch 2026' → 'summer_launch_2026'
-	"""
-	return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")
+from msuite_campaigns.campaign.doctype.marketing_campaign.marketing_campaign import (
+	slugify_utm as _slugify,
+)
 
 
 _CAMPAIGN_FIELDS = {

@@ -774,8 +774,12 @@ _WA_PRO_SMS_BASIC_PLAN = {
 }
 _SMS_ONLY_PLAN = {
     "plan_name": "SMS Basic",
-    "products": ["SMS"],
-    "features": {"sms_bulk_messaging": {"enabled": True, "limit": None, "label": "Bulk SMS Broadcasts"}},
+    "products": ["SMS", "CAMPAIGNS"],
+    "aws_enabled": True,
+    "features": {
+        "sms_bulk_messaging": {"enabled": True, "limit": None, "label": "Bulk SMS Broadcasts"},
+        "campaigns_audiences": {"enabled": True, "limit": None, "label": "Audiences"},
+    },
 }
 _EMAIL_BASIC_PLAN = {
     "plan_name": "Email Basic",
@@ -850,6 +854,13 @@ class TestBulkPerChannel(IntegrationTestCase):
             dispatch._require_feature("sms")
             with self.assertRaises(frappe.ValidationError):
                 dispatch._require_feature("whatsapp")
+
+    def test_aws_require_feature_requires_aws_enabled(self):
+        from msuite_campaigns.aws_pipeline import dispatch
+        plan_without_aws = {**_SMS_ONLY_PLAN, "aws_enabled": False}
+        with use_plan(plan_without_aws):
+            with self.assertRaises(frappe.ValidationError):
+                dispatch._require_feature("sms")
 
 
 

@@ -1,6 +1,6 @@
 {
  "actions": [],
- "creation": "2026-08-08 00:00:00.000000",
+ "creation": "2026-11-20 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -43,7 +43,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone (E.164)",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "phone_country",
@@ -79,7 +80,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Email",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "columns": 1,
@@ -146,10 +148,10 @@
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-08-08 00:00:00.000000",
+ "modified": "2026-11-20 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Audience",
- "name": "Audience Member",
+ "name": "Recipient Contact",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",

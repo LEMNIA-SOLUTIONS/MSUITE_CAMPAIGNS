@@ -31,7 +31,7 @@ _SOURCE_DATE_FIELDS = {
 	"Social Post": ("Social Post", "scheduled_at", "scheduled_at"),
 	"Ad Campaign": ("Ad Campaign", "start_date", "end_date"),
 	"WhatsApp Message": ("Bulk WhatsApp Message", "scheduled_time", "scheduled_time"),
-	"Task": ("Task", "exp_end_date", "exp_end_date"),
+	"Task": ("CRM Task", "due_date", "due_date"),
 	"Meeting": ("Event", "starts_on", "ends_on"),
 }
 
@@ -73,7 +73,10 @@ def get_calendar_events(
 
 	valid_types = [
 		t for t in requested_types
-		if t in _ALL_TYPES and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read")
+		if t in _ALL_TYPES and (
+			(frappe.db.exists("DocType", _SOURCE_DATE_FIELDS[t][0]) and frappe.has_permission(_SOURCE_DATE_FIELDS[t][0], "read"))
+			or (t == "WhatsApp Message" and frappe.db.exists("DocType", "Broadcast") and frappe.has_permission("Broadcast", "read"))
+		)
 	]
 	if not valid_types:
 		return []
@@ -143,32 +146,35 @@ def get_calendar_events(
 			pass
 
 	# 2. Fetch Tasks if requested and not scoped to an unrelated campaign
-	if "Task" in valid_types and not campaign and frappe.db.exists("DocType", "Task"):
+	# Same CRM Task list as the Task module; get_list applies the user's permissions.
+	if "Task" in valid_types and not campaign:
 		date_start = from_date[:10]
 		date_end = to_date[:10]
-		tasks = frappe.db.sql(
-			"""
-			SELECT name, subject, description, priority, status, exp_end_date, creation
-			FROM `tabTask`
-			WHERE (exp_end_date >= %(start)s AND exp_end_date <= %(end)s)
-			   OR (exp_end_date IS NULL AND creation >= %(from_dt)s AND creation <= %(to_dt)s)
-			ORDER BY exp_end_date ASC
-			LIMIT 100
-			""",
-			{"start": date_start, "end": date_end, "from_dt": from_date, "to_dt": to_date},
-			as_dict=True,
+		tasks = frappe.get_list(
+			"CRM Task",
+			fields=["name", "title", "description", "priority", "status", "due_date", "creation"],
+			filters=[["status", "!=", "Canceled"]],
+			or_filters=[
+				["due_date", "between", [date_start, f"{date_end} 23:59:59"]],
+				["due_date", "is", "not set"],
+			],
+			order_by="due_date asc",
+			limit=100,
 		)
 		for t in tasks:
-			due_date = str(t.exp_end_date) if t.exp_end_date else str(t.creation)[:10]
+			created = str(t.creation)[:10]
+			if not t.due_date and not (date_start <= created <= date_end):
+				continue
+			due_date = str(t.due_date)[:10] if t.due_date else created
 			start_iso = f"{due_date} 09:00:00"
 			end_iso = f"{due_date} 10:00:00"
-			status_mapped = "Completed" if t.status == "Completed" else "Scheduled"
+			status_mapped = "Completed" if t.status == "Done" else "Scheduled"
 			rows.append(
 				{
 					"name": f"task-{t.name}",
 					"event_type": "Task",
 					"source_name": t.name,
-					"title": t.subject or t.name,
+					"title": t.title or t.name,
 					"status": status_mapped,
 					"campaign": "",
 					"start_date": start_iso,
@@ -233,25 +239,71 @@ def reschedule_event(
 	start_date: str,
 	end_date: str,
 ) -> dict:
-	"""Update the source document's date fields and return the updated calendar event dict."""
-	if event_type not in _SOURCE_DATE_FIELDS:
+	"""Update the source document's date fields and return the updated calendar event dict.
+
+	Params:
+		event_type: Calendar event type (e.g. 'Campaign', 'Social Post', 'Ad Campaign',
+			'WhatsApp Message', 'Task', 'Meeting', or 'Broadcast').
+		source_name: Name/ID of the source document.
+		start_date: ISO date/datetime string for start of event.
+		end_date: ISO date/datetime string for end of event.
+
+	Returns:
+		dict: Updated Campaign Calendar Event document as a dictionary.
+
+	Exceptions:
+		frappe.DoesNotExistError: If source document does not exist.
+		frappe.PermissionError: If user lacks write permission on source document.
+		frappe.ValidationError: If event_type is unknown or Broadcast status is not Draft/Scheduled.
+
+	Side effects:
+		Updates the source document's date fields, writes to DB, and resyncs
+		the projected Campaign Calendar Event row.
+	"""
+	if event_type == "Broadcast":
+		doctype = "Broadcast"
+		start_field = "scheduled_time"
+		end_field = "scheduled_time"
+	elif event_type not in _SOURCE_DATE_FIELDS:
 		frappe.throw(_(f"Unknown event type: {event_type}"))
+	else:
+		doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
 
-	doctype, start_field, end_field = _SOURCE_DATE_FIELDS[event_type]
+	if doctype == "Bulk WhatsApp Message":
+		from msuite_campaigns.broadcast.legacy import resolve
 
-	if doctype == "Task":
-		task = frappe.get_doc("Task", source_name)
-		task.exp_end_date = start_date[:10]
-		task.save(ignore_permissions=True)
+		resolved = resolve("Bulk WhatsApp Message", source_name)
+		if resolved and frappe.db.exists("Broadcast", resolved):
+			doctype = "Broadcast"
+			source_name = resolved
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
+		elif not frappe.db.exists("DocType", "Bulk WhatsApp Message"):
+			if frappe.db.exists("Broadcast", source_name):
+				doctype = "Broadcast"
+				start_field = "scheduled_time"
+				end_field = "scheduled_time"
+			else:
+				frappe.throw(_("Bulk WhatsApp Message {0} not found").format(source_name), frappe.DoesNotExistError)
+		elif not frappe.db.exists("Bulk WhatsApp Message", source_name) and frappe.db.exists("Broadcast", source_name):
+			doctype = "Broadcast"
+			start_field = "scheduled_time"
+			end_field = "scheduled_time"
+
+	if doctype == "CRM Task":
+		task = frappe.get_doc("CRM Task", source_name)
+		task.due_date = start_date[:10]
+		task.save()  # the user's own write permission, as in the Task module
+		due = str(task.due_date)[:10]
 		return {
 			"name": f"task-{task.name}",
 			"event_type": "Task",
 			"source_name": task.name,
-			"title": task.subject or task.name,
-			"status": "Completed" if task.status == "Completed" else "Scheduled",
+			"title": task.title or task.name,
+			"status": "Completed" if task.status == "Done" else "Scheduled",
 			"campaign": "",
-			"start_date": f"{task.exp_end_date} 09:00:00",
-			"end_date": f"{task.exp_end_date} 10:00:00",
+			"start_date": f"{due} 09:00:00",
+			"end_date": f"{due} 10:00:00",
 			"platform": "Task",
 			"color_hint": "amber",
 		}
@@ -278,6 +330,9 @@ def reschedule_event(
 		frappe.throw(_(f"No write permission on {doctype} {source_name}"), frappe.PermissionError)
 
 	doc = frappe.get_doc(doctype, source_name)
+	if doctype == "Broadcast" and doc.status not in ("Draft", "Scheduled"):
+		frappe.throw(_("Cannot reschedule Broadcast in status {0}.").format(doc.status))
+
 	setattr(doc, start_field, start_date)
 	if start_field != end_field:
 		setattr(doc, end_field, end_date)

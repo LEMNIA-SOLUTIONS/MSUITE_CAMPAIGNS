@@ -143,10 +143,11 @@ def brokered(fn):
 
 	def wrapper(*args, **kwargs):
 		frappe.flags.aws_pipeline_force_ready = True
-		try:
-			return fn(*args, **kwargs)
-		finally:
-			frappe.flags.aws_pipeline_force_ready = False
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=True):
+			try:
+				return fn(*args, **kwargs)
+			finally:
+				frappe.flags.aws_pipeline_force_ready = False
 
 	wrapper.__name__ = fn.__name__
 	wrapper.__doc__ = fn.__doc__
@@ -787,6 +788,19 @@ class TestAWSIsTheDefault(IntegrationTestCase):
 	`should_use_aws` returns False when the site cannot actually reach the
 	provider, and the blast goes out the old way with a warning logged.
 	"""
+
+	def setUp(self):
+		super().setUp()
+		fake_plan = {
+			"aws_enabled": True,
+			"aws_min_recipient_threshold": 50,
+			"features": {"bulk_messaging": {"enabled": True}},
+		}
+		self._plan_patch = patch(
+			"msuite_core.services.plans.plan_enforcer.get_plan_data", return_value=fake_plan
+		)
+		self._plan_patch.start()
+		self.addCleanup(self._plan_patch.stop)
 
 	def tearDown(self):
 		frappe.flags.aws_pipeline_force_ready = False

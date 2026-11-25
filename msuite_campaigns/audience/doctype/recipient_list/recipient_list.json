@@ -1,18 +1,18 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:audience_name",
- "creation": "2026-08-08 00:00:00.000000",
+ "autoname": "field:list_name",
+ "creation": "2026-11-20 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "audience_name",
+  "list_name",
   "description",
   "column_break_head",
   "source",
   "default_region",
   "section_rollup",
-  "total_members",
+  "total_contacts",
   "valid_phone_count",
   "column_break_rollup",
   "valid_email_count",
@@ -27,15 +27,15 @@
   "import_filters",
   "data_fields",
   "import_limit",
-  "section_members",
-  "members"
+  "section_contacts",
+  "contacts"
  ],
  "fields": [
   {
-   "fieldname": "audience_name",
+   "fieldname": "list_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Audience Name",
+   "label": "List Name",
    "reqd": 1,
    "unique": 1
   },
@@ -67,14 +67,14 @@
    "label": "Validation"
   },
   {
-   "fieldname": "total_members",
+   "fieldname": "total_contacts",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "Total Members",
+   "label": "Total Contacts",
    "read_only": 1
   },
   {
-   "description": "Members with a Valid, mobile-reachable number.",
+   "description": "Contacts with a Valid, mobile-reachable number.",
    "fieldname": "valid_phone_count",
    "fieldtype": "Int",
    "label": "Reachable Phones",
@@ -85,7 +85,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Members whose email passes the default risk policy (ok / catch_all / error).",
+   "description": "Contacts whose email passes the default risk policy (ok / catch_all / error).",
    "fieldname": "valid_email_count",
    "fieldtype": "Int",
    "label": "Deliverable Emails",
@@ -159,23 +159,23 @@
    "label": "Import Limit"
   },
   {
-   "fieldname": "section_members",
+   "fieldname": "section_contacts",
    "fieldtype": "Section Break",
-   "label": "Members"
+   "label": "Contacts"
   },
   {
-   "fieldname": "members",
+   "fieldname": "contacts",
    "fieldtype": "Table",
-   "label": "Members",
-   "options": "Audience Member"
+   "label": "Contacts",
+   "options": "Recipient Contact"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-08-08 00:00:00.000000",
+ "modified": "2026-11-20 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Audience",
- "name": "Audience",
+ "name": "Recipient List",
  "owner": "Administrator",
  "permissions": [
   {
@@ -270,5 +270,6 @@
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

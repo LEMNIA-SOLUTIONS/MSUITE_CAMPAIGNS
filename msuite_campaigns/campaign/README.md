@@ -49,6 +49,19 @@ Reader endpoints query the compacted multi-tier storage model cleanly without do
    - Generates daily/weekly `spend_trend` time series without double counting and without including `LIFETIME` rows.
    - Sets `reach_approximate=True` on `kpis` and root response if any `WEEK` rows fall within the queried window.
 
+### Unified Broadcast & Legacy Coexistence
+
+1. **`list_channels(campaign)`**:
+   - Reads `Broadcast` records linked to the campaign having a WhatsApp `Broadcast Channel` row.
+   - Enforces user channel permissions via `msuite_campaigns.broadcast.permissions`.
+   - Additively includes legacy `Bulk WhatsApp Message` records when present.
+   - Automatically deduplicates migrated records via `broadcast.legacy.resolve`, showing them once as the unified `Broadcast`.
+
+2. **Insight Rollups (`sync_marketing_campaign_insights`)**:
+   - `_sync_campaign_day` and `_sync_campaign_lifetime` count `Channel Message` records where `reference_doctype IN ('Broadcast', 'Bulk WhatsApp Message')`.
+   - Deduplicates migrated records so that recipients and message counters from migrated blasts are not double-counted alongside their `Broadcast` counterparts.
+   - Enables real metrics display for campaigns with newly created unified Broadcasts.
+
 ### Code-Defined Custom Fields
 
 - **`lead_goal` (Int)**:

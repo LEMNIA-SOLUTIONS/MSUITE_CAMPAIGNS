@@ -93,6 +93,8 @@ def enqueue_chunks(doctype: str, name: str) -> int:
 	ever deleted the two disagree, and a count-derived upper bound would leave
 	the tail of the table unqueued.
 	"""
+	if not frappe.db.exists("DocType", doctype):
+		return 0
 	spec = _ROW_SPEC.get(doctype)
 	if not spec:
 		frappe.log_error(title="Batched enqueue: unknown doctype", message=doctype)
