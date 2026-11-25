@@ -61,7 +61,8 @@ The architecture consists of six doctypes:
 | `campaign` | Marketing Campaign | Link | Linked Marketing Campaign. |
 | `recipient_source` | Recipient Source | Select | Recipient List or Individual. |
 | `recipient_list` | Recipient List | Link | Linked Recipient List document. |
-| `scheduled_time` | Scheduled Time | Datetime | Optional future dispatch time. |
+| `schedule_mode` | Schedule Mode | Select | `Same for all channels` (default) or `Per channel`. |
+| `scheduled_time` | Scheduled Time | Datetime | Optional future dispatch time. In `Same for all channels` mode every channel uses it. In `Per channel` mode it is derived as the earliest channel time (read from the rows). |
 | `launched_at` | Launched At | Datetime | Timestamp when launch started. |
 | `total_recipients` | Total Recipients | Int | Total recipients across channels. |
 | `launch_error` | Launch Error | Small Text | Error message if launch fails. |
@@ -77,6 +78,7 @@ The architecture consists of six doctypes:
 |---|---|---|---|
 | `channel` | Channel | Select | WhatsApp, Email, or SMS. |
 | `status` | Status | Select | Status of the channel execution. |
+| `scheduled_time` | Scheduled Time | Datetime | Dispatch time for this channel. Only allowed when the Broadcast's `schedule_mode` is `Per channel`; empty means send at launch. |
 | `delivery_engine` | Delivery Engine | Select | AWS or Standard. |
 | `use_batched_enqueue` | Use Batched Enqueue | Check | Enables batched background enqueue. |
 | `template_variables` | Template Variables | Code | JSON mapping of template variables. |
@@ -116,6 +118,15 @@ The architecture consists of six doctypes:
 | `estimated_credits` | Estimated Credits | Float | Pre-send estimated SMS credit cost. |
 | `actual_credits` | Actual Credits | Float | Total billed SMS credit usage. |
 
+#### Scheduling
+
+- `Broadcast.schedule_mode` decides how channels are timed. Existing Broadcasts are set to `Same for all channels` by patch `set_broadcast_schedule_mode`.
+- Validation (`Broadcast.validate`): in `Same for all channels` mode no row may carry a time; in `Per channel` mode a Draft or Scheduled row's time cannot be in the past (the error names the channel); a launched row's time cannot change and a launched row cannot be removed; at least one channel row stays.
+- Switching mode on a saved Broadcast: Per channel to Same clears row times; Same to Per channel seeds empty row times from the parent time.
+- `clone_broadcast` keeps `schedule_mode` and copies times only while they are still in the future.
+- `save_broadcast` on an existing Broadcast edits rows in place, matched by channel: Draft and Scheduled rows take the new values and keep their status; a launched row is kept exactly as stored (payload values for it are ignored) and cannot be omitted; channels not yet on the Broadcast are added as Draft; omitted Draft or Scheduled rows are removed.
+- Schedule times given with a time zone offset (for example `...T10:00:00+05:30` or `...Z`) are converted to the site time zone before any comparison (`broadcast/schedule_time.py::to_site_datetime`).
+
 #### Lifecycle and Transitions
 
 Broadcasts and channels use nine statuses: `Draft`, `Scheduled`, `Queued`, `In Progress`, `Paused`, `Completed`, `Partially Failed`, `Failed`, and `Cancelled`.
@@ -154,8 +165,14 @@ The parent `Broadcast.status` is derived from child `Broadcast Channel` rows usi
 Message delivery executes in seven stages:
 1. **Save / Launch Request**: The user saves a `Broadcast` in `Draft` or `Scheduled` status via `api.v1.broadcast.save_broadcast`, or launches it via `api.v1.broadcast.launch_broadcast`. These whitelisted API methods enforce permission checks (`write` permission on `Broadcast`). When launching, execution delegates to `hub.launch`.
 2. **Materialize**: Inside `hub.launch`, each channel executes with savepoint isolation. The hub validates the channel using the adapter's optional `validate_channel` function. It calls `materializer.materialize(broadcast, channel)` to load recipient contacts, normalize phone numbers and emails, exclude opted-out contacts, and write `Broadcast Recipient` rows in batches of 1000 with status `Queued`.
-3. **Launch**: `hub.launch` calls `lifecycle.launch(broadcast, channel)`, which also runs `plan_enforcer.check_broadcast_launch` to enforce plan limits and channel monthly quotas. If `scheduled_time` is in the future, the channel transitions to `Scheduled`. Otherwise, the channel transitions to `Queued` and updates the parent status.
-4. **Start Channel**: When a channel transitions to `Queued`, `hub.launch` calls `hub.start_channel(broadcast, channel)`. `hub.start_channel` advances channel status from `Queued` to `In Progress` via `lifecycle.transition_channel`. It routes delivery based on whether AWS delivery is enabled: it calls `aws.export_and_enqueue_channel` if AWS is configured, or `enqueue.enqueue_broadcast_channel` for the Standard engine.
+3. **Launch**: `hub.launch` calls `lifecycle.launch(broadcast, channel)`, which also runs `plan_enforcer.check_broadcast_launch` to enforce plan limits and channel monthly quotas. Each channel uses its effective time (`Broadcast.effective_time(row)`: the parent `scheduled_time` in `Same for all channels` mode, the row's own `scheduled_time` in `Per channel` mode). If it is in the future, the channel transitions to `Scheduled`. Otherwise (empty or past), the channel transitions to `Queued` and updates the parent status.
+4. **Start Channel**: When a channel transitions to `Queued`, `hub.launch` calls `hub.start_channel(broadcast, channel)`. `hub.start_channel` advances channel status from `Queued` to `In Progress` via `lifecycle.transition_channel`. It routes delivery based on whether AWS delivery is enabled: it calls `aws.export_and_enqueue_channel` if AWS is configured and eligible, or `enqueue.enqueue_broadcast_channel` for the Standard engine.
+   - **Delivery Engine Selection Rule**: AWS execution plane is used **only** when all four conditions are met:
+     1. **Provider Master Switch**: The provider's `MSuite AWS Settings` has `enabled = 1` (pushed in the client's plan payload as `aws_enabled == True`).
+     2. **Plan Bulk Feature**: The client's plan enables bulk messaging for the channel (`plan_enforcer.is_bulk_enabled(channel)`).
+     3. **Recipient Threshold**: The channel recipient count exceeds the threshold (`recipient_count > threshold` when `aws_min_recipient_threshold > 0`). Blasts with `recipient_count <= threshold` route via Frappe Standard engine.
+     4. **Provider Connection**: Client workspace has `provider_url` and `api_key` configured in `MSuite Settings`.
+     Otherwise, execution automatically routes to the **Frappe Standard** queue (`enqueue.enqueue_broadcast_channel`).
 5. **Standard Enqueue or AWS Hand-off**:
    - For `Standard`: `enqueue.enqueue_broadcast_channel` splits recipients into chunks of 500 and queues background jobs that run `enqueue.run_chunk`. Each chunk checks that the channel is still active, calls the adapter's `send_one` for each recipient, and applies the returned status through `recipients.apply_delivery_status`. An exception in `send_one` marks only that recipient `Failed`.
    - For `AWS`: `aws.export_and_enqueue_channel` builds one manifest line per queued recipient with the adapter's `manifest_header` and `manifest_row`. It requests an upload URL from the provider and uploads the manifest. It then calls the adapter's `sync_secret`, asks the provider to trigger the AWS campaign (`aws_pipeline.client.trigger_campaign`), and finally calls the adapter's `record_outbound`. AWS sends do not write per-recipient status back to the database. Counters come from DynamoDB through `rollup.channel_metrics`.
@@ -196,18 +213,19 @@ The adapter dictionary must contain the following keys:
 
 | Method | Arguments | Returns |
 |---|---|---|
-| `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}` |
-| `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "completed": int, "failed": int, "cancelled": int}` |
-| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics`.) |
+| `list_broadcasts` | `filters="", search="", status="", template="", date_range="", date_from="", date_to="", start=0, limit=20` | `{"rows": list[dict], "total": int}`. Supports `date_range` presets (`today`, `7days`, `30days`, `month`, `quarter`, `custom`). Rows and channels carry `planned_recipient_count` with row-level draft fallback for `recipient_count`. |
+| `get_broadcast_metrics` | None | `{"total": int, "draft": int, "scheduled": int, "inProgress": int, "paused": int, "completed": int, "failed": int, "cancelled": int}` |
+| `get_broadcast` | `name` | `dict` (Broadcast document with child rows. Each channel row that the user may see carries `channel_metrics`, `planned_recipient_count`, and live `retrying_count`. Top level includes `planned_recipient_count`.) |
 | `save_broadcast` | `doc, launch=0, individual_rows="[]", name=""` | `{"name": str, "status": str, "results": dict}`. Only user-editable fields are accepted. Status, counters and timestamps are set by the system. A new broadcast always starts as `Draft`. |
 | `launch_broadcast` | `name, individual_rows="[]"` | `dict[str, str]` (per-channel status) |
-| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
-| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status). A resumed Standard channel sends the recipients that are still `Queued`. |
-| `cancel_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
-| `retry_failed_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status) |
+| `pause_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.pause`). A channel that uses the AWS engine cannot be paused after the hand-off to AWS. |
+| `resume_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.resume`). A resumed Standard channel sends the recipients that are still `Queued` or `Retrying`. |
+| `cancel_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.cancel`). |
+| `retry_failed_broadcast` | `name, channel=""` | `dict[str, str]` (per-channel status via `hub.retry`). Flips retryable Failed recipients to `Retrying`, clears old failure reason and error code, and begins delivery via `start_channel`. |
 | `delete_broadcasts` | `names` (JSON list string) | `{"deleted": list[str], "failed": list[dict]}` |
-| `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress and percentages) |
+| `get_broadcast_progress` | `name` | `dict[str, dict]` (channel progress, percentages, and live `retrying_count`) |
 | `get_broadcast_recipients` | `name, channel="", status="", search="", start=0, length=50, export=0` | `{"rows": list[dict], "total": int, "truncated": bool}` |
+| `get_broadcast_draft_recipients` | `name, search="", start=0, page_length=20` | `{"rows": list[dict], "total": int}` (preview contacts from linked Recipient List for Draft/Scheduled broadcasts). |
 | `clone_broadcast` | `name` | `dict` (new Draft Broadcast document). The user needs create access to every channel on the source broadcast. |
 
 ##### `msuite_campaigns.audience.api.v1.recipient_list`
@@ -241,7 +259,7 @@ The broadcast scheduler initiates scheduled dispatches:
 - Function: `msuite_campaigns.broadcast.scheduler.start_due_channels() -> int`.
 - Schedule: Runs every five minutes via `scheduler_events["cron"]["*/5 * * * *"]` in `hooks.py`.
 - Operation:
-  1. Finds channel rows with status `Scheduled` where `scheduled_time <= now`.
+  1. Finds channel rows with status `Scheduled` whose effective time is `<= now` (the row's `scheduled_time` in `Per channel` mode, the parent's otherwise).
   2. Verifies that the linked campaign is active via `is_campaign_active(campaign)`.
   3. Transitions each due channel row to `Queued`.
   4. Starts delivery via `hub.start_channel(broadcast, channel)`.
@@ -288,10 +306,15 @@ The unified broadcast system provides one configuration flag:
 - Memory capacity: The materializer loads recipient lists into memory during chunking. Lists up to 50,000 contacts operate within standard limits. Lists over 100,000 contacts require increased worker memory.
 - Database write overhead: `record_outbound` generates outbound `Channel Message` rows using keyset pagination. This step has O(N) database write complexity.
 - WhatsApp list-type blast migration: Historical WhatsApp list blasts without `Channel Message` rows migrate delivery counters only. Individual recipient logs cannot be reconstructed without message rows.
+- Broadcast completion and counter refresh: `refresh_counters` advances channels in `Queued` or `In Progress` to terminal completion (`Completed`, `Partially Failed`, `Failed`) once all recipients reach final delivery status, stepping through `In Progress` where direct lifecycle transition is not allowed. Computes live `retrying_count` for active retry rows without storing an unbacked DB column.
+- Retry execution and status clearing: `requeue_failed_recipients` flips retryable `Failed` recipient rows to `Retrying`, clears `failure_reason` and `error_code`, and increments `retry_count`. API endpoints (`retry_failed_broadcast`, `resume_broadcast`, `pause_broadcast`, `cancel_broadcast`) delegate to `broadcast.hub` to ensure delivery jobs are queued.
+- Stale Queued channel resolution: `fail_stale_queued_channels()` marks Queued channels with zero recipients modified older than `STALE_QUEUED_MINUTES` (30 min) as `Failed` with launch error "No recipients were queued".
 
 #### Tests
 
 ```bash
+bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.broadcast.tests.test_broadcast_retry
+bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.broadcast.tests.test_broadcast_completion
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_broadcast_constants
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_recipient_list
 bench --site lemnia.localhost run-tests --app msuite_campaigns --module msuite_campaigns.tests.test_broadcast_doctype

@@ -134,12 +134,33 @@ class TestBroadcastAws(IntegrationTestCase):
 		):
 			self.assertFalse(should_use_aws(broadcast_doc, row_aws_ready_false))
 
-		# 4. Truthy case: engine AWS, recipient_count >= threshold, is_ready is True -> True
+		# 4. Truthy case: engine AWS, recipient_count > threshold, is_ready is True -> True
 		row_aws_ok = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 100})
 		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
 			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
 		):
 			self.assertTrue(should_use_aws(broadcast_doc, row_aws_ok))
+
+		# 5. Boundary case: recipient_count == threshold (50 == 50) -> False (routes Standard)
+		row_aws_exact_thresh = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 50})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
+		):
+			self.assertFalse(should_use_aws(broadcast_doc, row_aws_exact_thresh))
+
+		# 6. Boundary case: recipient_count == threshold + 1 (51 > 50) -> True (routes AWS)
+		row_aws_thresh_plus_one = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 51})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=50
+		):
+			self.assertTrue(should_use_aws(broadcast_doc, row_aws_thresh_plus_one))
+
+		# 7. Boundary case: threshold == 0, recipient_count == 0 -> True (when AWS and ready)
+		row_aws_zero = frappe._dict({"channel": "WhatsApp", "delivery_engine": "AWS", "recipient_count": 0})
+		with patch("msuite_campaigns.broadcast.aws.is_ready", return_value=True), patch(
+			"msuite_campaigns.broadcast.aws.get_min_recipient_threshold", return_value=0
+		):
+			self.assertTrue(should_use_aws(broadcast_doc, row_aws_zero))
 
 	def test_export_order_presign_upload_sync_trigger_record(self):
 		"""export_and_enqueue_channel enforces exact order: presign < upload < sync < trigger < record."""
@@ -490,4 +511,17 @@ class TestBroadcastAws(IntegrationTestCase):
 			self.assertEqual(opted_rec[0].status, "Unsubscribed")
 		finally:
 			frappe.delete_doc("Contact", contact.name, force=True, ignore_permissions=True)
+
+	def test_require_feature_aws_disabled_aborts_export(self):
+		"""export_and_enqueue_channel fails fast via _require_feature if is_aws_enabled returns False."""
+		from msuite_campaigns.broadcast.aws import export_and_enqueue_channel
+
+		b = self._make_broadcast(channel="WhatsApp", delivery_engine="AWS")
+		bulk_insert_recipients(b.name, "WhatsApp", [{"address": "+919800000009"}])
+
+		with patch("msuite_core.services.plans.plan_enforcer.is_aws_enabled", return_value=False), \
+			patch("msuite_core.services.plans.plan_enforcer.is_bulk_enabled", return_value=True):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				export_and_enqueue_channel(b.name, "WhatsApp")
+			self.assertIn("AWS delivery is not enabled", str(ctx.exception))
 

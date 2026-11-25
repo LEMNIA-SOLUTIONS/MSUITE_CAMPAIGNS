@@ -19,13 +19,22 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, cint, getdate, today
+from frappe.utils import add_days, cint, get_datetime, getdate, now_datetime, today
 
 from msuite_campaigns.broadcast.constants import (
 	CHANNEL_EMAIL,
 	CHANNEL_SMS,
 	CHANNEL_WHATSAPP,
 	CHANNELS,
+	DATE_RANGE_30DAYS,
+	DATE_RANGE_7DAYS,
+	DATE_RANGE_CUSTOM,
+	DATE_RANGE_MONTH,
+	DATE_RANGE_QUARTER,
+	DATE_RANGE_TODAY,
+	DEFAULT_DRAFT_PAGE_LENGTH,
+	MAX_DRAFT_PAGE_LENGTH,
+	SCHEDULE_SAME,
 	STATUS_CANCELLED,
 	STATUS_COMPLETED,
 	STATUS_DRAFT,
@@ -40,10 +49,202 @@ from msuite_campaigns.broadcast.constants import (
 )
 from msuite_campaigns.broadcast.permissions import has_permission as broadcast_has_permission
 from msuite_campaigns.broadcast.permissions import permitted_channels
+from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 
 MAX_PAGE_LENGTH: int = 100
 EXPORT_LIMIT: int = 10000
 MAX_BULK_DELETE_LIMIT: int = 50
+
+
+def _planned_recipient_count(
+	doc_or_row: dict | Any,
+	channel_row: dict | Any | None = None,
+	list_counts: dict[str, dict[str, int]] | None = None,
+) -> int:
+	"""Compute planned recipient count for a broadcast or channel row.
+
+	For Draft or Scheduled rows with stored recipient_count == 0, reads
+	valid_phone_count (for WhatsApp and SMS) or valid_email_count (for Email)
+	from the linked Recipient List. If the source is Individual, returns 0
+	(individual rows are not stored prior to launch). For launched rows or
+	rows with non-zero stored count, returns the stored recipient count.
+
+	Params:
+		doc_or_row: Broadcast document or dictionary.
+		channel_row: Optional channel row dictionary or child doc.
+		list_counts: Optional pre-fetched map of recipient list names to counts dict.
+
+	Returns:
+		int: Planned recipient count (>= 0).
+
+	Exceptions:
+		None. Gracefully handles missing or unreadable lists by returning 0.
+
+	Side effects:
+		May query tabRecipient List if list_counts is not provided.
+	"""
+	if channel_row is not None:
+		status = getattr(channel_row, "status", None) or (
+			channel_row.get("status") if isinstance(channel_row, dict) else None
+		)
+		stored_count = cint(
+			getattr(channel_row, "recipient_count", None)
+			or (channel_row.get("recipient_count") if isinstance(channel_row, dict) else 0)
+		)
+		if status not in (STATUS_DRAFT, STATUS_SCHEDULED) or stored_count > 0:
+			return stored_count
+
+		recipient_source = getattr(doc_or_row, "recipient_source", None) or (
+			doc_or_row.get("recipient_source") if isinstance(doc_or_row, dict) else None
+		)
+		if recipient_source != "Recipient List":
+			return 0
+
+		list_name = getattr(doc_or_row, "recipient_list", None) or (
+			doc_or_row.get("recipient_list") if isinstance(doc_or_row, dict) else None
+		)
+		if not list_name:
+			return 0
+
+		list_data = None
+		if list_counts is not None:
+			list_data = list_counts.get(list_name)
+		else:
+			try:
+				if frappe.has_permission("Recipient List", "read", doc=list_name):
+					list_data = frappe.db.get_value(
+						"Recipient List",
+						list_name,
+						["valid_phone_count", "valid_email_count"],
+						as_dict=True,
+					)
+			except Exception:
+				list_data = None
+
+		if not list_data:
+			return 0
+
+		ch_name = getattr(channel_row, "channel", None) or (
+			channel_row.get("channel") if isinstance(channel_row, dict) else None
+		)
+		if ch_name in (CHANNEL_WHATSAPP, CHANNEL_SMS):
+			return cint(list_data.get("valid_phone_count"))
+		elif ch_name == CHANNEL_EMAIL:
+			return cint(list_data.get("valid_email_count"))
+		return 0
+
+	# doc_or_row top level
+	status = getattr(doc_or_row, "status", None) or (
+		doc_or_row.get("status") if isinstance(doc_or_row, dict) else None
+	)
+	stored_total = cint(
+		getattr(doc_or_row, "total_recipients", None)
+		or (doc_or_row.get("total_recipients") if isinstance(doc_or_row, dict) else 0)
+	)
+	if status not in (STATUS_DRAFT, STATUS_SCHEDULED) or stored_total > 0:
+		return stored_total
+
+	channels = getattr(doc_or_row, "channels", None) or (
+		doc_or_row.get("channels") if isinstance(doc_or_row, dict) else []
+	)
+	if channels:
+		counts = [
+			c.get("planned_recipient_count")
+			if isinstance(c, dict) and "planned_recipient_count" in c
+			else _planned_recipient_count(doc_or_row, c, list_counts=list_counts)
+			for c in channels
+		]
+		return max(counts, default=0)
+
+	recipient_source = getattr(doc_or_row, "recipient_source", None) or (
+		doc_or_row.get("recipient_source") if isinstance(doc_or_row, dict) else None
+	)
+	if recipient_source != "Recipient List":
+		return 0
+
+	list_name = getattr(doc_or_row, "recipient_list", None) or (
+		doc_or_row.get("recipient_list") if isinstance(doc_or_row, dict) else None
+	)
+	if not list_name:
+		return 0
+
+	list_data = None
+	if list_counts is not None:
+		list_data = list_counts.get(list_name)
+	else:
+		try:
+			if frappe.has_permission("Recipient List", "read", doc=list_name):
+				list_data = frappe.db.get_value(
+					"Recipient List",
+					list_name,
+					["valid_phone_count", "valid_email_count"],
+					as_dict=True,
+				)
+		except Exception:
+			list_data = None
+
+	if not list_data:
+		return 0
+
+	return cint(list_data.get("valid_phone_count")) or cint(list_data.get("valid_email_count")) or 0
+
+
+def _build_date_filters(
+	date_range: str = "",
+	date_from: str = "",
+	date_to: str = "",
+) -> list[list[str]]:
+	"""Build Frappe filter expressions on modified timestamp for date range presets.
+
+	Params:
+		date_range: Date range preset ('today', '7days', '30days', 'month', 'quarter', 'custom').
+		date_from: Start date string when date_range is 'custom'.
+		date_to: End date string when date_range is 'custom'.
+
+	Returns:
+		list[list[str]]: List of Frappe filter expressions.
+
+	Exceptions:
+		None. Gracefully ignores unparseable dates.
+
+	Side effects:
+		None.
+	"""
+	date_filters: list[list[str]] = []
+	if not date_range:
+		return date_filters
+
+	dr = str(date_range).strip().lower()
+	today_date = today()
+	t = getdate(today_date)
+	if dr in ("today", DATE_RANGE_TODAY):
+		date_filters.append(["modified", ">=", today_date])
+	elif dr in ("7days", DATE_RANGE_7DAYS):
+		date_filters.append(["modified", ">=", str(add_days(today_date, -7))])
+	elif dr in ("30days", DATE_RANGE_30DAYS):
+		date_filters.append(["modified", ">=", str(add_days(today_date, -30))])
+	elif dr in ("month", DATE_RANGE_MONTH):
+		month_start = str(t.replace(day=1))
+		date_filters.append(["modified", ">=", month_start])
+	elif dr in ("quarter", DATE_RANGE_QUARTER):
+		quarter_start_month = 1 + 3 * ((t.month - 1) // 3)
+		quarter_start = str(t.replace(month=quarter_start_month, day=1))
+		date_filters.append(["modified", ">=", quarter_start])
+	elif dr in ("custom", DATE_RANGE_CUSTOM):
+		if date_from and str(date_from).strip():
+			try:
+				valid_from = str(getdate(str(date_from).strip()))
+				date_filters.append(["modified", ">=", valid_from])
+			except Exception:
+				pass
+		if date_to and str(date_to).strip():
+			try:
+				valid_to = str(getdate(str(date_to).strip()))
+				date_filters.append(["modified", "<=", f"{valid_to} 23:59:59"])
+			except Exception:
+				pass
+
+	return date_filters
 
 
 def _loads(raw: Any, default: Any) -> Any:
@@ -127,6 +328,8 @@ def list_broadcasts(
 		st = str(status).strip()
 		if st == "inProgress":
 			parsed_filters.append(["status", "in", [STATUS_QUEUED, STATUS_IN_PROGRESS]])
+		elif st == STATUS_FAILED:
+			parsed_filters.append(["status", "in", [STATUS_FAILED, STATUS_PARTIALLY_FAILED]])
 		else:
 			parsed_filters.append(["status", "=", st])
 
@@ -146,27 +349,7 @@ def list_broadcasts(
 		parsed_filters.append(["name", "in", matching_parents])
 
 	if date_range:
-		dr = str(date_range).strip().lower()
-		today_date = today()
-		if dr == "today":
-			parsed_filters.append(["modified", ">=", today_date])
-		elif dr == "7days":
-			parsed_filters.append(["modified", ">=", str(add_days(today_date, -7))])
-		elif dr == "30days":
-			parsed_filters.append(["modified", ">=", str(add_days(today_date, -30))])
-		elif dr == "custom":
-			if date_from and str(date_from).strip():
-				try:
-					valid_from = str(getdate(str(date_from).strip()))
-					parsed_filters.append(["modified", ">=", valid_from])
-				except Exception:
-					pass
-			if date_to and str(date_to).strip():
-				try:
-					valid_to = str(getdate(str(date_to).strip()))
-					parsed_filters.append(["modified", "<=", f"{valid_to} 23:59:59"])
-				except Exception:
-					pass
+		parsed_filters.extend(_build_date_filters(date_range, date_from, date_to))
 
 	total_res = frappe.get_list(
 		"Broadcast",
@@ -202,6 +385,30 @@ def list_broadcasts(
 	user_channels = permitted_channels(frappe.session.user)
 	broadcast_names = [d["name"] for d in docs]
 	channels_by_parent: dict[str, list[dict]] = {name: [] for name in broadcast_names}
+	parent_docs_map = {d["name"]: d for d in docs}
+
+	# Batched retrieval of recipient list counts for draft/scheduled broadcasts
+	distinct_lists = list({
+		d["recipient_list"]
+		for d in docs
+		if d.get("recipient_source") == "Recipient List" and d.get("recipient_list")
+	})
+	list_counts: dict[str, dict[str, int]] = {}
+	if distinct_lists:
+		try:
+			if frappe.has_permission("Recipient List", "read"):
+				fetched_lists = frappe.get_list(
+					"Recipient List",
+					filters={"name": ["in", distinct_lists]},
+					fields=["name", "valid_phone_count", "valid_email_count"],
+				)
+				list_counts = {
+					l["name"]: l
+					for l in fetched_lists
+					if frappe.has_permission("Recipient List", "read", doc=l["name"])
+				}
+		except Exception:
+			list_counts = {}
 
 	if broadcast_names:
 		all_channels = frappe.get_all(
@@ -240,20 +447,31 @@ def list_broadcasts(
 				template_name = ch.get("sms_template")
 				account_name = ch.get("sms_account")
 
+			parent_doc = parent_docs_map.get(ch["parent"], {})
+			planned_cnt = _planned_recipient_count(parent_doc, ch, list_counts=list_counts)
+
 			channels_by_parent[ch["parent"]].append({
 				"channel": ch["channel"],
 				"status": ch["status"],
 				"template": template_name,
 				"account": account_name,
 				"recipient_count": cint(ch.get("recipient_count")),
+				"planned_recipient_count": planned_cnt,
 				"sent_count": cint(ch.get("sent_count")),
 				"delivered_count": cint(ch.get("delivered_count")),
 				"failed_count": cint(ch.get("failed_count")),
 			})
 
 	for row in docs:
-		row["recipient_count"] = cint(row.get("total_recipients"))
-		row["channels"] = channels_by_parent.get(row["name"], [])
+		row_channels = channels_by_parent.get(row["name"], [])
+		row["channels"] = row_channels
+		top_planned = _planned_recipient_count(row, list_counts=list_counts)
+		row["planned_recipient_count"] = top_planned
+		stored_total = cint(row.get("total_recipients"))
+		if row.get("status") in (STATUS_DRAFT, STATUS_SCHEDULED) and stored_total == 0:
+			row["recipient_count"] = top_planned
+		else:
+			row["recipient_count"] = stored_total
 
 	return {"rows": docs, "total": total}
 
@@ -311,11 +529,17 @@ def get_available_channels() -> dict:
 
 
 @frappe.whitelist()
-def get_broadcast_metrics() -> dict:
-	"""Return aggregate KPI counts of permitted Broadcast documents.
+def get_broadcast_metrics(
+	date_range: str = "",
+	date_from: str = "",
+	date_to: str = "",
+) -> dict:
+	"""Return aggregate KPI counts of permitted Broadcast documents, optionally filtered by date range.
 
 	Params:
-		None.
+		date_range: Optional date range preset ('today', '7days', '30days', 'month', 'quarter', 'custom').
+		date_from: Start date string when date_range is 'custom'.
+		date_to: End date string when date_range is 'custom'.
 
 	Returns:
 		dict: {
@@ -323,6 +547,7 @@ def get_broadcast_metrics() -> dict:
 			"draft": int,
 			"scheduled": int,
 			"inProgress": int,
+			"paused": int,
 			"completed": int,
 			"failed": int,
 			"cancelled": int,
@@ -336,8 +561,13 @@ def get_broadcast_metrics() -> dict:
 	"""
 	frappe.has_permission("Broadcast", "read", throw=True)
 
+	filters: list[Any] = []
+	if date_range:
+		filters.extend(_build_date_filters(date_range, date_from, date_to))
+
 	rows = frappe.get_list(
 		"Broadcast",
+		filters=filters,
 		fields=["status", {"COUNT": "name", "as": "count"}],
 		group_by="status",
 	)
@@ -346,6 +576,7 @@ def get_broadcast_metrics() -> dict:
 		"draft": 0,
 		"scheduled": 0,
 		"inProgress": 0,
+		"paused": 0,
 		"completed": 0,
 		"failed": 0,
 		"cancelled": 0,
@@ -361,6 +592,8 @@ def get_broadcast_metrics() -> dict:
 			metrics["scheduled"] += cnt
 		elif st in (STATUS_QUEUED, STATUS_IN_PROGRESS):
 			metrics["inProgress"] += cnt
+		elif st == STATUS_PAUSED:
+			metrics["paused"] += cnt
 		elif st == STATUS_COMPLETED:
 			metrics["completed"] += cnt
 		elif st in (STATUS_FAILED, STATUS_PARTIALLY_FAILED):
@@ -400,13 +633,30 @@ def get_broadcast(name: str) -> dict:
 	if CHANNEL_WHATSAPP not in user_channels:
 		doc_dict["products"] = []
 
+	retrying_counts_raw = frappe.db.sql(
+		"""
+		SELECT channel, COUNT(*) AS retrying_count
+		FROM `tabBroadcast Recipient`
+		WHERE broadcast = %(broadcast)s AND status = 'Retrying'
+		GROUP BY channel
+		""",
+		{"broadcast": name},
+		as_dict=True,
+	)
+	retrying_by_channel = {r["channel"]: cint(r["retrying_count"]) for r in retrying_counts_raw}
+
 	for ch in doc_dict.get("channels", []):
 		ch_name = ch.get("channel")
+		ch["retrying_count"] = retrying_by_channel.get(ch_name, 0)
 		try:
 			from msuite_campaigns.broadcast import rollup
 			ch["channel_metrics"] = rollup.channel_metrics(doc, ch_name)
 		except Exception:
 			ch["channel_metrics"] = {}
+
+		ch["planned_recipient_count"] = _planned_recipient_count(doc_dict, ch)
+
+	doc_dict["planned_recipient_count"] = _planned_recipient_count(doc_dict)
 
 	return doc_dict
 
@@ -493,10 +743,38 @@ def save_broadcast(
 				b_doc.set(field, data[field])
 
 		if "channels" in data:
+			stored_by_channel = {r.channel: r for r in (b_doc.channels or [])}
+			new_channels = []
+			for ch in data.get("channels", []):
+				if not isinstance(ch, dict):
+					continue
+				ch_name = ch.get("channel")
+				if ch_name in stored_by_channel:
+					stored_row = stored_by_channel[ch_name]
+					if stored_row.status in (STATUS_DRAFT, STATUS_SCHEDULED):
+						for field in WRITABLE_CHANNEL_FIELDS:
+							if field in ch:
+								stored_row.set(field, ch[field])
+						if stored_row.channel != CHANNEL_WHATSAPP:
+							stored_row.variable_type = ""
+						new_channels.append(stored_row)
+					else:
+						# Locked row: ignore payload values; keep stored row as is
+						new_channels.append(stored_row)
+				else:
+					# New channel row: status Draft, counters 0
+					new_channels.append(_sanitize_channel_row(ch))
+
 			b_doc.set("channels", [])
-			for ch in data["channels"]:
-				if isinstance(ch, dict):
-					b_doc.append("channels", _sanitize_channel_row(ch))
+			for item in new_channels:
+				if isinstance(item, dict):
+					b_doc.append("channels", item)
+				else:
+					item.parent = b_doc.name
+					item.parenttype = b_doc.doctype
+					item.parentfield = "channels"
+					item.idx = len(b_doc.channels) + 1
+					b_doc.channels.append(item)
 
 		if "products" in data:
 			b_doc.set("products", [])
@@ -609,10 +887,10 @@ def pause_broadcast(name: str, channel: str = "") -> dict:
 		Updates Broadcast and channel row statuses in DB.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.pause(name, channel=target_channel)
+	return hub.pause(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -632,12 +910,13 @@ def resume_broadcast(name: str, channel: str = "") -> dict:
 
 	Side effects:
 		Updates Broadcast and channel row statuses in DB.
+		Enqueues delivery jobs for resumed channels.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.resume(name, channel=target_channel)
+	return hub.resume(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -659,10 +938,10 @@ def cancel_broadcast(name: str, channel: str = "") -> dict:
 		Updates Broadcast and channel row statuses in DB.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.cancel(name, channel=target_channel)
+	return hub.cancel(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -682,12 +961,13 @@ def retry_failed_broadcast(name: str, channel: str = "") -> dict:
 
 	Side effects:
 		Updates Broadcast, channel rows, and recipient rows in DB.
+		Enqueues delivery jobs for retried channels.
 	"""
 	frappe.has_permission("Broadcast", "write", doc=name, throw=True)
-	from msuite_campaigns.broadcast import lifecycle
+	from msuite_campaigns.broadcast import hub
 
 	target_channel = str(channel).strip() if channel and str(channel).strip() else None
-	return lifecycle.retry_failed(name, channel=target_channel)
+	return hub.retry(name, channel=target_channel)
 
 
 @frappe.whitelist()
@@ -798,6 +1078,18 @@ def get_broadcast_progress(name: str) -> dict:
 		],
 	)
 
+	retrying_counts_raw = frappe.db.sql(
+		"""
+		SELECT channel, COUNT(*) AS retrying_count
+		FROM `tabBroadcast Recipient`
+		WHERE broadcast = %(broadcast)s AND status = 'Retrying'
+		GROUP BY channel
+		""",
+		{"broadcast": name},
+		as_dict=True,
+	)
+	retrying_by_channel = {r["channel"]: cint(r["retrying_count"]) for r in retrying_counts_raw}
+
 	progress: dict[str, dict[str, Any]] = {}
 	for row in channel_rows:
 		if row.channel not in user_channels:
@@ -813,6 +1105,7 @@ def get_broadcast_progress(name: str) -> dict:
 			"delivered_count": cint(row.delivered_count),
 			"read_count": cint(row.read_count),
 			"failed_count": cint(row.failed_count),
+			"retrying_count": retrying_by_channel.get(row.channel, 0),
 			"percent_sent": pct,
 		}
 
@@ -946,11 +1239,148 @@ def get_broadcast_recipients(
 
 
 @frappe.whitelist()
-def clone_broadcast(name: str) -> dict:
-	"""Clone an existing Broadcast into a new Draft Broadcast without a schedule.
+def get_broadcast_draft_recipients(
+	name: str,
+	search: str = "",
+	start: int = 0,
+	page_length: int = DEFAULT_DRAFT_PAGE_LENGTH,
+	channel: str = "",
+) -> dict:
+	"""Fetch preview recipient rows from the linked Recipient List for a Draft/Scheduled broadcast.
 
-	Copies child channel rows, products, recipient source, and title with suffix ' (copy)'.
-	Resets channel statuses to 'Draft' and clears counter fields.
+	Requires read permission on both the Broadcast and the linked Recipient List.
+	Only returns records while the Broadcast is in Draft or Scheduled status.
+	Address defaults to phone_e164 or email_normalized (or channel-appropriate contact address).
+
+	Params:
+		name: Broadcast document name.
+		search: Optional search term matching recipient full name or address.
+		start: 0-indexed pagination offset.
+		page_length: Number of rows to return, clamped to MAX_DRAFT_PAGE_LENGTH.
+		channel: Optional channel filter string (e.g. 'Email', 'WhatsApp') to prioritize channel-specific address.
+
+	Returns:
+		dict: {"rows": [{"recipient_name": str, "address": str}], "total": int}.
+
+	Exceptions:
+		frappe.PermissionError: If user lacks read permission on Broadcast or Recipient List.
+		frappe.DoesNotExistError: If target Broadcast document does not exist.
+
+	Side effects:
+		Queries the database.
+	"""
+	frappe.has_permission("Broadcast", "read", doc=name, throw=True)
+	b_doc = frappe.get_doc("Broadcast", name)
+
+	if b_doc.status not in (STATUS_DRAFT, STATUS_SCHEDULED):
+		return {"rows": [], "total": 0}
+
+	if b_doc.recipient_source != "Recipient List" or not b_doc.recipient_list:
+		return {"rows": [], "total": 0}
+
+	frappe.has_permission("Recipient List", "read", doc=b_doc.recipient_list, throw=True)
+
+	if not frappe.db.exists("Recipient List", b_doc.recipient_list):
+		return {"rows": [], "total": 0}
+
+	start = max(0, cint(start))
+	limit = cint(page_length) if cint(page_length) > 0 else DEFAULT_DRAFT_PAGE_LENGTH
+	limit = min(limit, MAX_DRAFT_PAGE_LENGTH)
+
+	base_conditions = [
+		"parent = %(parent)s",
+		"parenttype = 'Recipient List'",
+		"parentfield = 'contacts'",
+	]
+	params: dict[str, Any] = {
+		"parent": b_doc.recipient_list,
+		"limit": limit,
+		"offset": start,
+	}
+
+	search_term = str(search).strip() if search else ""
+	if search_term:
+		base_conditions.append(
+			"(full_name LIKE %(search)s OR phone_e164 LIKE %(search)s OR raw_phone LIKE %(search)s OR email_normalized LIKE %(search)s OR raw_email LIKE %(search)s)"
+		)
+		params["search"] = f"%{search_term}%"
+
+	where_clause = " AND ".join(base_conditions)
+
+	total_res = frappe.db.sql(
+		f"SELECT COUNT(*) FROM `tabRecipient Contact` WHERE {where_clause}",
+		params,
+	)
+	total = cint(total_res[0][0]) if total_res else 0
+
+	if total == 0 or start >= total:
+		return {"rows": [], "total": total}
+
+	raw_contacts = frappe.db.sql(
+		f"""
+		SELECT full_name, phone_e164, raw_phone, email_normalized, raw_email
+		FROM `tabRecipient Contact`
+		WHERE {where_clause}
+		ORDER BY idx ASC, name ASC
+		LIMIT %(limit)s OFFSET %(offset)s
+		""",
+		params,
+		as_dict=True,
+	)
+
+	if channel:
+		prefer_email = (channel == CHANNEL_EMAIL)
+	else:
+		prefer_email = bool(b_doc.channels) and all(ch.channel == CHANNEL_EMAIL for ch in b_doc.channels)
+
+	rows = []
+	for c in raw_contacts:
+		rec_name = c.get("full_name") or ""
+		if prefer_email:
+			addr = c.get("email_normalized") or c.get("raw_email") or c.get("phone_e164") or c.get("raw_phone") or ""
+		else:
+			addr = c.get("phone_e164") or c.get("raw_phone") or c.get("email_normalized") or c.get("raw_email") or ""
+		rows.append({
+			"recipient_name": rec_name,
+			"address": addr,
+		})
+
+	return {"rows": rows, "total": total}
+
+
+def _future_scheduled_time_or_none(scheduled_time: Any) -> Any:
+	"""Return scheduled time if it is strictly in the future, otherwise None.
+
+	Params:
+		scheduled_time: Datetime object, string representation, or None.
+
+	Returns:
+		Any: Original datetime value if strictly greater than now_datetime(), otherwise None.
+
+	Raises:
+		None.
+
+	Side effects:
+		None.
+	"""
+	if not scheduled_time:
+		return None
+	try:
+		dt = to_site_datetime(scheduled_time)
+		if dt and dt > now_datetime():
+			return scheduled_time
+	except Exception:
+		pass
+	return None
+
+
+@frappe.whitelist()
+def clone_broadcast(name: str) -> dict:
+	"""Clone an existing Broadcast into a new Draft Broadcast with schedule mode and future times preserved.
+
+	Copies schedule_mode, future scheduled_time, child channel rows, products, recipient source,
+	and title with suffix ' (copy)'. Resets channel statuses to 'Draft' and clears counter fields.
+	Past scheduled_time values on parent and child channel rows are cleared to None.
 
 	Params:
 		name: Name of existing Broadcast to clone.
@@ -981,7 +1411,8 @@ def clone_broadcast(name: str) -> dict:
 	new_doc.recipient_source = doc.recipient_source
 	new_doc.recipient_list = doc.recipient_list
 	new_doc.status = STATUS_DRAFT
-	new_doc.scheduled_time = None
+	new_doc.schedule_mode = doc.schedule_mode or SCHEDULE_SAME
+	new_doc.scheduled_time = _future_scheduled_time_or_none(doc.scheduled_time)
 	new_doc.launched_at = None
 	new_doc.launch_error = None
 	new_doc.total_recipients = 0
@@ -1003,6 +1434,7 @@ def clone_broadcast(name: str) -> dict:
 		if ch_dict.get("channel") != CHANNEL_WHATSAPP:
 			ch_dict["variable_type"] = ""
 		ch_dict["status"] = STATUS_DRAFT
+		ch_dict["scheduled_time"] = _future_scheduled_time_or_none(ch_dict.get("scheduled_time"))
 		ch_dict["recipient_count"] = 0
 		ch_dict["sent_count"] = 0
 		ch_dict["delivered_count"] = 0

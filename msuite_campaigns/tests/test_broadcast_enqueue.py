@@ -291,3 +291,12 @@ class TestBroadcastEnqueue(IntegrationTestCase):
 		self.assertEqual(ch_status, "Completed")
 		self.assertEqual(b_status, "Completed")
 
+	def test_enqueue_broadcast_channel_zero_chunks_calls_request_counter_refresh(self):
+		"""enqueue_broadcast_channel calls request_counter_refresh when 0 chunks are found."""
+		b = self._make_broadcast()
+		with patch("msuite_campaigns.broadcast.counters.request_counter_refresh") as mock_refresh:
+			chunks = enqueue_broadcast_channel(b.name, "WhatsApp")
+			self.assertEqual(chunks, 0)
+			mock_refresh.assert_called_once_with(b.name, "WhatsApp")
+
+

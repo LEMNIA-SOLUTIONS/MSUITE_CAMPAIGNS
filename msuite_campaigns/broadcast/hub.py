@@ -249,11 +249,12 @@ def launch(
 			from msuite_campaigns.broadcast.lifecycle import launch as lifecycle_launch
 
 			launch_res = lifecycle_launch(broadcast, row.channel)
-			new_status = launch_res.get(row.channel) or frappe.db.get_value("Broadcast Channel", row.name, "status")
 
-			if new_status == "Queued":
+			if launch_res.get(row.channel) == "Queued":
 				start_channel(broadcast, row.channel)
 				new_status = frappe.db.get_value("Broadcast Channel", row.name, "status")
+			else:
+				new_status = launch_res.get(row.channel) or frappe.db.get_value("Broadcast Channel", row.name, "status")
 
 			frappe.db.release_savepoint(sp)
 			results[row.channel] = {

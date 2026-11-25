@@ -15,6 +15,16 @@ from typing import Any
 import frappe
 from frappe.utils import cint
 
+from msuite_campaigns.broadcast.constants import (
+	ALLOWED_TRANSITIONS,
+	PENDING_RECIPIENT_STATUSES,
+	STATUS_COMPLETED,
+	STATUS_FAILED,
+	STATUS_IN_PROGRESS,
+	STATUS_PARTIALLY_FAILED,
+	STATUS_QUEUED,
+)
+
 _PENDING_KEY = "_pending_counter_refreshes"
 
 
@@ -25,11 +35,16 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 	recipient, sent, delivered, read, failed, bounced, opened, clicked,
 	unsubscribed, and retry counts.
 
-	When the channel row is `In Progress` and no recipients remain in `Queued`
-	or `Retrying`, transitions the channel row via `lifecycle.transition_channel`:
+	When the channel row is `Queued` or `In Progress`, recipient_count > 0, and
+	no recipients remain in `Queued`, `Retrying`, or `Sending`, transitions the
+	channel row via `lifecycle.transition_channel`:
 	- All Failed -> `Failed`
 	- Any Failed or Bounced -> `Partially Failed`
 	- Else -> `Completed`
+
+	If a transition directly from `Queued` to the target status is not permitted
+	by `ALLOWED_TRANSITIONS` (e.g. Queued -> Completed), steps through `In Progress`
+	first. Calling on an already completed channel is an idempotent no-op.
 
 	Args:
 		broadcast: Name of the parent Broadcast document.
@@ -58,12 +73,21 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 			SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) AS clicked_count,
 			SUM(CASE WHEN status = 'Unsubscribed' THEN 1 ELSE 0 END) AS unsubscribed_count,
 			COALESCE(SUM(retry_count), 0) AS retry_count,
-			SUM(CASE WHEN status IN ('Queued', 'Retrying') THEN 1 ELSE 0 END) AS queued_count
+			SUM(CASE WHEN status = 'Retrying' THEN 1 ELSE 0 END) AS retrying_count,
+			SUM(CASE WHEN status IN %(pending_statuses)s THEN 1 ELSE 0 END) AS queued_count
 		FROM `tabBroadcast Recipient`
 		WHERE `broadcast` = %(broadcast)s
 		  AND `channel` = %(channel)s
 	"""
-	raw_counts = frappe.db.sql(sql, {"broadcast": broadcast, "channel": channel}, as_dict=True)
+	raw_counts = frappe.db.sql(
+		sql,
+		{
+			"broadcast": broadcast,
+			"channel": channel,
+			"pending_statuses": PENDING_RECIPIENT_STATUSES,
+		},
+		as_dict=True,
+	)
 	row_data = raw_counts[0] if raw_counts else {}
 
 	counts = {
@@ -77,6 +101,7 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 		"clicked_count": cint(row_data.get("clicked_count")),
 		"unsubscribed_count": cint(row_data.get("unsubscribed_count")),
 		"retry_count": cint(row_data.get("retry_count")),
+		"retrying_count": cint(row_data.get("retrying_count")),
 	}
 	queued_count = cint(row_data.get("queued_count"))
 
@@ -88,7 +113,8 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 	)
 
 	if ch_row:
-		frappe.db.set_value("Broadcast Channel", ch_row.name, counts, update_modified=False)
+		db_counts = {k: v for k, v in counts.items() if k != "retrying_count"}
+		frappe.db.set_value("Broadcast Channel", ch_row.name, db_counts, update_modified=False)
 
 		all_counts = frappe.db.get_values(
 			"Broadcast Channel",
@@ -99,16 +125,21 @@ def refresh_counters(broadcast: str, channel: str) -> dict[str, int]:
 		total_recipients = max([c.get("recipient_count") or 0 for c in all_counts] or [0])
 		frappe.db.set_value("Broadcast", broadcast, "total_recipients", total_recipients, update_modified=False)
 
-		# Transition when In Progress and all recipients finished
-		if ch_row.status == "In Progress" and queued_count == 0:
-			if counts["recipient_count"] > 0 and counts["failed_count"] == counts["recipient_count"]:
-				target_status = "Failed"
+		# Transition when Queued or In Progress, recipient_count > 0, and all recipients finished
+		if ch_row.status in (STATUS_QUEUED, STATUS_IN_PROGRESS) and queued_count == 0 and counts["recipient_count"] > 0:
+			if counts["failed_count"] == counts["recipient_count"]:
+				target_status = STATUS_FAILED
 			elif counts["failed_count"] > 0 or counts["bounced_count"] > 0:
-				target_status = "Partially Failed"
+				target_status = STATUS_PARTIALLY_FAILED
 			else:
-				target_status = "Completed"
+				target_status = STATUS_COMPLETED
 
 			from msuite_campaigns.broadcast.lifecycle import transition_channel
+
+			# If direct transition from current status is not permitted, step through In Progress first
+			allowed_from_current = ALLOWED_TRANSITIONS.get(ch_row.status, set())
+			if target_status not in allowed_from_current:
+				transition_channel(broadcast, channel, STATUS_IN_PROGRESS)
 
 			transition_channel(broadcast, channel, target_status)
 

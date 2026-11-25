@@ -106,6 +106,16 @@ STATUS_PARTIALLY_FAILED: str = "Partially Failed"
 STATUS_FAILED: str = "Failed"
 STATUS_CANCELLED: str = "Cancelled"
 
+RECIPIENT_STATUS_QUEUED: str = "Queued"
+RECIPIENT_STATUS_SENT: str = "Sent"
+RECIPIENT_STATUS_DELIVERED: str = "Delivered"
+RECIPIENT_STATUS_READ: str = "Read"
+RECIPIENT_STATUS_FAILED: str = "Failed"
+RECIPIENT_STATUS_BOUNCED: str = "Bounced"
+RECIPIENT_STATUS_RETRYING: str = "Retrying"
+RECIPIENT_STATUS_SKIPPED: str = "Skipped"
+RECIPIENT_STATUS_UNSUBSCRIBED: str = "Unsubscribed"
+
 # DocType constants
 BROADCAST_DOCTYPE: str = "Broadcast"
 BROADCAST_CHANNEL_DOCTYPE: str = "Broadcast Channel"
@@ -122,6 +132,14 @@ MIGRATION_VERIFY_CHUNK: int = 1000
 LEGACY_LIST_DOCTYPES: tuple[str, ...] = (AUDIENCE_DOCTYPE, "WhatsApp Recipient List", "Email Recipient List")
 LEGACY_BROADCAST_DOCTYPES: tuple[str, ...] = (BULK_WHATSAPP_MESSAGE_DOCTYPE, BULK_EMAIL_MESSAGE_DOCTYPE, BULK_SMS_MESSAGE_DOCTYPE)
 
+# Schedule modes
+SCHEDULE_SAME: str = "Same for all channels"
+SCHEDULE_PER_CHANNEL: str = "Per channel"
+SCHEDULE_MODES: tuple[str, ...] = (SCHEDULE_SAME, SCHEDULE_PER_CHANNEL)
+
+# Scheduler constants
+SCHEDULER_BATCH_LIMIT: int = 100
+
 # Whitelists for save_broadcast to prevent mass-assignment vulnerabilities
 WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
 	"title",
@@ -130,6 +148,7 @@ WRITABLE_BROADCAST_FIELDS: tuple[str, ...] = (
 	"recipient_source",
 	"recipient_list",
 	"scheduled_time",
+	"schedule_mode",
 )
 
 WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
@@ -137,6 +156,7 @@ WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
 	"delivery_engine",
 	"use_batched_enqueue",
 	"template_variables",
+	"scheduled_time",
 	"whatsapp_account",
 	"whatsapp_template",
 	"variable_type",
@@ -160,6 +180,27 @@ WRITABLE_CHANNEL_FIELDS: tuple[str, ...] = (
 	"sms_account",
 	"sms_template",
 )
+
+# Pagination limits for draft recipients preview
+DEFAULT_DRAFT_PAGE_LENGTH: int = 20
+MAX_DRAFT_PAGE_LENGTH: int = 100
+
+# Date range presets for broadcast listing
+DATE_RANGE_TODAY: str = "today"
+DATE_RANGE_7DAYS: str = "7days"
+DATE_RANGE_30DAYS: str = "30days"
+DATE_RANGE_MONTH: str = "month"
+DATE_RANGE_QUARTER: str = "quarter"
+DATE_RANGE_CUSTOM: str = "custom"
+
+# Stale queue limits and messages
+STALE_QUEUED_MINUTES: int = 30
+ERROR_NO_RECIPIENTS_QUEUED: str = "No recipients were queued"
+
+# In-flight recipient statuses preventing completion
+PENDING_RECIPIENT_STATUSES: tuple[str, ...] = ("Queued", "Retrying", "Sending")
+
+
 
 
 

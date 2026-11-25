@@ -234,6 +234,48 @@ class TestBroadcastHub(IntegrationTestCase):
 		self.assertEqual(ch_status, "Draft")
 		mock_start.assert_not_called()
 
+	def test_launch_starts_channel_when_this_call_queued_it(self):
+		"""launch calls start_channel once when lifecycle.launch returns Queued."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		wa_adapter = {"channel": "WhatsApp", "send_one": MagicMock()}
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=wa_adapter), \
+			patch("msuite_campaigns.broadcast.materializer.materialize", return_value={"queued": 1, "dropped": 0}), \
+			patch("msuite_campaigns.broadcast.lifecycle.launch", return_value={"WhatsApp": "Queued"}) as mock_lifecycle_launch, \
+			patch("msuite_campaigns.broadcast.hub.start_channel") as mock_start:
+			res = launch(b.name, individual_rows=[{"address": "+919811100001"}])
+
+		mock_lifecycle_launch.assert_called_once_with(b.name, "WhatsApp")
+		mock_start.assert_called_once_with(b.name, "WhatsApp")
+
+	def test_launch_does_not_start_channel_already_queued_by_scheduler(self):
+		"""launch does not call start_channel if row is already Queued in DB and lifecycle.launch returns {}."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value("Broadcast Channel", {"parent": b.name, "channel": "WhatsApp"}, "status", "Queued")
+		wa_adapter = {"channel": "WhatsApp", "send_one": MagicMock()}
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=wa_adapter), \
+			patch("msuite_campaigns.broadcast.materializer.materialize", return_value={"queued": 1, "dropped": 0}), \
+			patch("msuite_campaigns.broadcast.lifecycle.launch", return_value={}) as mock_lifecycle_launch, \
+			patch("msuite_campaigns.broadcast.hub.start_channel") as mock_start:
+			res = launch(b.name, individual_rows=[{"address": "+919811100001"}])
+
+		mock_lifecycle_launch.assert_called_once_with(b.name, "WhatsApp")
+		mock_start.assert_not_called()
+		self.assertEqual(res["WhatsApp"]["status"], "Queued")
+
+	def test_launch_scheduled_row_is_not_started(self):
+		"""launch does not call start_channel when lifecycle.launch returns Scheduled."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		wa_adapter = {"channel": "WhatsApp", "send_one": MagicMock()}
+		with patch("msuite_campaigns.broadcast.adapters.get_channel_adapter", return_value=wa_adapter), \
+			patch("msuite_campaigns.broadcast.materializer.materialize", return_value={"queued": 1, "dropped": 0}), \
+			patch("msuite_campaigns.broadcast.lifecycle.launch", return_value={"WhatsApp": "Scheduled"}) as mock_lifecycle_launch, \
+			patch("msuite_campaigns.broadcast.hub.start_channel") as mock_start:
+			res = launch(b.name, individual_rows=[{"address": "+919811100001"}])
+
+		mock_lifecycle_launch.assert_called_once_with(b.name, "WhatsApp")
+		mock_start.assert_not_called()
+		self.assertEqual(res["WhatsApp"]["status"], "Scheduled")
+
 	def test_savepoint_isolation(self):
 		"""Exception during channel launch is rolled back cleanly via savepoint."""
 		b = self._make_broadcast(channels=["WhatsApp", "Email"])
@@ -463,4 +505,22 @@ class TestBroadcastHub(IntegrationTestCase):
 		self.assertEqual(ch_status, "Failed")
 		self.assertEqual(b_status, "Failed")
 		self.assertIn("SQS or worker queue failure", ch_err)
+
+	def test_start_channel_zero_chunks_does_not_call_refresh_counters_synchronously(self):
+		"""start_channel leaves counter refresh to enqueue.py without synchronous refresh_counters call."""
+		b = self._make_broadcast(channels=["WhatsApp"])
+		frappe.db.set_value(
+			"Broadcast Channel",
+			{"parent": b.name, "channel": "WhatsApp"},
+			"status",
+			"Queued",
+			update_modified=False,
+		)
+		frappe.db.set_value("Broadcast", b.name, "status", "Queued", update_modified=False)
+
+		with patch("msuite_campaigns.broadcast.enqueue.enqueue_broadcast_channel", return_value=0) as mock_enqueue, \
+			patch("msuite_campaigns.broadcast.counters.refresh_counters") as mock_refresh:
+			start_channel(b.name, "WhatsApp")
+			mock_enqueue.assert_called_once_with(b.name, "WhatsApp")
+			mock_refresh.assert_not_called()
 

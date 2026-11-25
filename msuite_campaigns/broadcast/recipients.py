@@ -344,8 +344,8 @@ def requeue_failed_recipients(broadcast: str, channel: str) -> int:
 	"""Re-queue retryable failed recipients for a broadcast and channel.
 
 	Updates tabBroadcast Recipient rows where status is 'Failed' and is_retryable is 1,
-	setting status='Retrying' and incrementing retry_count by 1. Bypasses monotonic
-	rank guard deliberately to allow retries.
+	setting status='Retrying', incrementing retry_count by 1, and clearing
+	failure_reason and error_code. Bypasses monotonic rank guard deliberately to allow retries.
 
 	Args:
 		broadcast: Name of the Broadcast document.
@@ -371,6 +371,8 @@ def requeue_failed_recipients(broadcast: str, channel: str) -> int:
 		UPDATE `tabBroadcast Recipient`
 		SET `status` = 'Retrying',
 			`retry_count` = `retry_count` + 1,
+			`failure_reason` = NULL,
+			`error_code` = NULL,
 			`modified` = %(now)s
 		WHERE `broadcast` = %(broadcast)s
 		  AND `channel` = %(channel)s

@@ -11,6 +11,8 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_to_date, now_datetime
 
+from msuite_campaigns.broadcast.constants import SCHEDULE_PER_CHANNEL, SCHEDULE_SAME
+from msuite_campaigns.broadcast.lifecycle import rollup_status
 from msuite_campaigns.broadcast.scheduler import start_due_channels
 
 TEST_PREFIX = "ZZTestBS "
@@ -23,15 +25,19 @@ class TestBroadcastScheduler(IntegrationTestCase):
 		super().setUp()
 		self.cleanup_broadcasts: list[str] = []
 		self.cleanup_campaigns: list[str] = []
+		frappe.db.sql(f"DELETE FROM `tabBroadcast Channel` WHERE parent IN (SELECT name FROM `tabBroadcast` WHERE title LIKE '{TEST_PREFIX}%')")
+		frappe.db.sql(f"DELETE FROM `tabBroadcast` WHERE title LIKE '{TEST_PREFIX}%'")
+		frappe.db.sql(f"DELETE FROM `tabMarketing Campaign` WHERE campaign_name LIKE '{TEST_PREFIX}%'")
+		frappe.db.commit()
 
 	def tearDown(self):
-		frappe.db.rollback()
 		for name in self.cleanup_broadcasts:
 			if frappe.db.exists("Broadcast", name):
 				frappe.delete_doc("Broadcast", name, force=True, ignore_permissions=True)
 		for name in self.cleanup_campaigns:
 			if frappe.db.exists("Marketing Campaign", name):
 				frappe.delete_doc("Marketing Campaign", name, force=True, ignore_permissions=True)
+		frappe.db.commit()
 
 	def _make_campaign(self, status: str = "Active") -> str:
 		camp = frappe.get_doc(
@@ -45,6 +51,7 @@ class TestBroadcastScheduler(IntegrationTestCase):
 		)
 		camp.flags.ignore_permissions = True
 		camp.insert(ignore_links=True)
+		frappe.db.commit()
 		self.cleanup_campaigns.append(camp.name)
 		return camp.name
 
@@ -55,30 +62,64 @@ class TestBroadcastScheduler(IntegrationTestCase):
 		channel_status: str = "Scheduled",
 		scheduled_time=None,
 		campaign: str | None = None,
+		channels: list[dict] | None = None,
+		schedule_mode: str = SCHEDULE_SAME,
 	) -> "frappe.model.document.Document":
+		"""Helper to construct and insert a Broadcast document.
+
+		Params:
+			channel: Default channel name when channels list is omitted.
+			status: Overall Broadcast status.
+			channel_status: Default channel row status when channels list is omitted.
+			scheduled_time: Optional datetime override.
+			campaign: Optional linked Marketing Campaign.
+			channels: Optional custom channel row specifications.
+			schedule_mode: Broadcast schedule mode ("Same for all channels" or "Per channel").
+
+		Returns:
+			frappe.model.document.Document: Inserted Broadcast document.
+
+		Raises:
+			frappe.ValidationError: If validation fails.
+
+		Side effects:
+			Inserts documents and commits transaction.
+		"""
 		future_time = add_to_date(now_datetime(), hours=2)
+		if channels is None:
+			channels_data = [
+				{
+					"channel": channel,
+					"status": channel_status,
+					"whatsapp_account": "WA-ACC-001" if channel == "WhatsApp" else None,
+					"whatsapp_template": "tpl_wa_001" if channel == "WhatsApp" else None,
+				}
+			]
+		else:
+			channels_data = channels
+
+		for ch in channels_data:
+			if ch.get("channel") != "WhatsApp":
+				ch.setdefault("variable_type", "")
+
 		doc = frappe.get_doc(
 			{
 				"doctype": "Broadcast",
 				"title": f"{TEST_PREFIX}{frappe.generate_hash(length=6)}",
 				"recipient_source": "Individual",
 				"status": status,
+				"schedule_mode": schedule_mode,
 				"scheduled_time": future_time if scheduled_time else None,
 				"campaign": campaign,
-				"channels": [
-					{
-						"channel": channel,
-						"status": channel_status,
-						"whatsapp_account": "WA-ACC-001" if channel == "WhatsApp" else None,
-						"whatsapp_template": "tpl_wa_001" if channel == "WhatsApp" else None,
-					}
-				],
+				"channels": channels_data,
 			}
 		)
+		doc.flags.ignore_permissions = True
 		doc.insert(ignore_links=True)
 		if scheduled_time:
 			frappe.db.set_value("Broadcast", doc.name, "scheduled_time", scheduled_time, update_modified=False)
 			doc.scheduled_time = scheduled_time
+		frappe.db.commit()
 		self.cleanup_broadcasts.append(doc.name)
 		return doc
 
@@ -185,4 +226,159 @@ class TestBroadcastScheduler(IntegrationTestCase):
 
 		b2_st = frappe.db.get_value("Broadcast Channel", {"parent": b2.name, "channel": "WhatsApp"}, "status")
 		self.assertEqual(b2_st, "In Progress")
+
+	def test_indexes_search_index_set(self):
+		"""Broadcast Channel status & scheduled_time, and Broadcast scheduled_time have search_index set."""
+		bc_meta = frappe.get_meta("Broadcast Channel")
+		b_meta = frappe.get_meta("Broadcast")
+
+		bc_status = bc_meta.get_field("status")
+		bc_sched = bc_meta.get_field("scheduled_time")
+		b_sched = b_meta.get_field("scheduled_time")
+
+		self.assertEqual(bc_status.search_index, 1)
+		self.assertEqual(bc_sched.search_index, 1)
+		self.assertEqual(b_sched.search_index, 1)
+
+	def test_scheduler_batch_limit(self):
+		"""Scheduler respects SCHEDULER_BATCH_LIMIT and starts remaining due rows on next tick."""
+		now = now_datetime()
+		due1 = add_to_date(now, minutes=-15)
+		due2 = add_to_date(now, minutes=-10)
+		due3 = add_to_date(now, minutes=-5)
+
+		b1 = self._make_broadcast(scheduled_time=due1)
+		b2 = self._make_broadcast(scheduled_time=due2)
+		b3 = self._make_broadcast(scheduled_time=due3)
+
+		with patch("msuite_campaigns.broadcast.scheduler.SCHEDULER_BATCH_LIMIT", 2), \
+			patch("msuite_campaigns.broadcast.hub.start_channel"):
+			first_run = start_due_channels()
+			b3_status = frappe.db.get_value("Broadcast Channel", {"parent": b3.name, "channel": "WhatsApp"}, "status")
+			self.assertEqual(first_run, 2)
+			self.assertEqual(b3_status, "Scheduled")
+
+			second_run = start_due_channels()
+			b3_status_after = frappe.db.get_value("Broadcast Channel", {"parent": b3.name, "channel": "WhatsApp"}, "status")
+			self.assertEqual(second_run, 1)
+			self.assertIn(b3_status_after, ("Queued", "In Progress"))
+
+	def test_per_row_transaction_boundary(self):
+		"""Per-row transaction boundary: rollback on failure, commit on success, isolate bad row."""
+		now = now_datetime()
+		due = add_to_date(now, minutes=-5)
+		b1 = self._make_broadcast(scheduled_time=due)
+		b2 = self._make_broadcast(scheduled_time=due)
+
+		def fake_start(broadcast, channel):
+			if broadcast == b1.name:
+				raise RuntimeError("b1 simulated failure")
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start), \
+			patch("frappe.log_error") as mock_log, \
+			patch("frappe.db.rollback", wraps=frappe.db.rollback) as spy_rollback, \
+			patch("frappe.db.commit", wraps=frappe.db.commit) as spy_commit:
+			started = start_due_channels()
+			self.assertEqual(started, 1)
+			self.assertEqual(mock_log.call_count, 1)
+			self.assertIn(b1.name, mock_log.call_args[1]["title"])
+			spy_rollback.assert_called()
+			spy_commit.assert_called()
+
+		b2_st = frappe.db.get_value("Broadcast Channel", {"parent": b2.name, "channel": "WhatsApp"}, "status")
+		self.assertIn(b2_st, ("Queued", "In Progress"))
+
+	def test_race_branch_noise(self):
+		"""ValidationError due to race where row moved out of Scheduled is silently skipped with no Error Log."""
+		now = now_datetime()
+		due = add_to_date(now, minutes=-5)
+		b = self._make_broadcast(scheduled_time=due)
+
+		def fake_transition(broadcast, channel, target_status):
+			# Simulate concurrent transaction moving row to Queued and committing
+			frappe.db.set_value("Broadcast Channel", {"parent": broadcast, "channel": channel}, "status", "Queued")
+			frappe.db.commit()
+			frappe.throw("Invalid transition: row already Queued", frappe.ValidationError)
+
+		with patch("msuite_campaigns.broadcast.scheduler.transition_channel", side_effect=fake_transition), \
+			patch("frappe.log_error") as mock_log, \
+			patch("frappe.db.rollback", wraps=frappe.db.rollback) as spy_rollback:
+			started = start_due_channels()
+			self.assertEqual(started, 0)
+			mock_log.assert_not_called()
+			spy_rollback.assert_called()
+
+	def test_failed_start_keeps_parent_rollup_status(self):
+		"""Per-channel broadcast with WhatsApp (due, fails start) and Email (Completed): parent keeps rollup status."""
+		now = now_datetime()
+		due_time = add_to_date(now, minutes=-10)
+		future_time = add_to_date(now, hours=2)
+
+		doc = self._make_broadcast(
+			schedule_mode=SCHEDULE_PER_CHANNEL,
+			channels=[
+				{
+					"channel": "WhatsApp",
+					"status": "Scheduled",
+					"whatsapp_account": "WA-ACC-001",
+					"whatsapp_template": "tpl_wa_001",
+					"scheduled_time": future_time,
+				},
+				{
+					"channel": "Email",
+					"status": "Completed",
+					"email_account": "mail@test.com",
+					"email_template": "tpl_email_001",
+					"variable_type": "",
+				},
+			],
+		)
+		wa_row = doc.channel_row("WhatsApp")
+		frappe.db.set_value("Broadcast Channel", wa_row.name, "scheduled_time", due_time, update_modified=False)
+		frappe.db.set_value("Broadcast", doc.name, "scheduled_time", due_time, update_modified=False)
+		frappe.db.commit()
+
+		def fake_start(broadcast, channel):
+			if broadcast == doc.name and channel == "WhatsApp":
+				raise RuntimeError("Simulated WhatsApp dispatch failure")
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start), \
+			patch("frappe.log_error"):
+			started_count = start_due_channels()
+
+		self.assertEqual(started_count, 0)
+
+		doc.reload()
+		wa_row_after = doc.channel_row("WhatsApp")
+		self.assertEqual(wa_row_after.status, "Failed")
+		self.assertIn("Simulated WhatsApp dispatch failure", wa_row_after.launch_error)
+
+		expected_parent_status = rollup_status(doc)
+		self.assertEqual(expected_parent_status, "Partially Failed")
+		self.assertEqual(doc.status, "Partially Failed")
+		self.assertEqual(doc.status, expected_parent_status)
+		self.assertIn("Simulated WhatsApp dispatch failure", doc.launch_error)
+
+	def test_failed_start_of_only_channel_marks_parent_failed(self):
+		"""Broadcast with a single channel that fails dispatch marks parent status as Failed."""
+		now = now_datetime()
+		due_time = add_to_date(now, minutes=-5)
+		doc = self._make_broadcast(scheduled_time=due_time)
+
+		def fake_start(broadcast, channel):
+			if broadcast == doc.name:
+				raise RuntimeError("Single channel launch failure")
+
+		with patch("msuite_campaigns.broadcast.hub.start_channel", side_effect=fake_start), \
+			patch("frappe.log_error"):
+			started_count = start_due_channels()
+
+		self.assertEqual(started_count, 0)
+
+		doc.reload()
+		wa_row = doc.channel_row("WhatsApp")
+		self.assertEqual(wa_row.status, "Failed")
+		self.assertIn("Single channel launch failure", wa_row.launch_error)
+		self.assertEqual(doc.status, "Failed")
+		self.assertIn("Single channel launch failure", doc.launch_error)
 

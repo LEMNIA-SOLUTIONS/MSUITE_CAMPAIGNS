@@ -18,6 +18,7 @@ from frappe.utils import cint, get_datetime, now_datetime
 
 from msuite_campaigns.broadcast.constants import ALLOWED_TRANSITIONS
 from msuite_campaigns.broadcast.recipients import requeue_failed_recipients
+from msuite_campaigns.broadcast.schedule_time import to_site_datetime
 from msuite_core.services.plans.plan_enforcer import check_broadcast_launch
 
 
@@ -260,7 +261,7 @@ def launch(broadcast: str, channel: str | None = None) -> dict[str, str]:
 	"""Launch a Broadcast or a specific channel on a Broadcast.
 
 	FIRST calls plan_enforcer.check_broadcast_launch(doc) to enforce quotas per channel row.
-	For rows in Draft/Scheduled, transitions them to Scheduled if doc.scheduled_time is in the
+	For rows in Draft/Scheduled, transitions each row to Scheduled if doc.effective_time(row) is in the
 	future, else Queued. Rows already Queued, In Progress, or Scheduled (when target is Scheduled)
 	are a silent no-op (idempotent double launch). Terminal rows and others are skipped.
 
@@ -287,11 +288,13 @@ def launch(broadcast: str, channel: str | None = None) -> dict[str, str]:
 
 	check_broadcast_launch(doc)
 
-	is_future = bool(doc.scheduled_time and get_datetime(doc.scheduled_time) > now_datetime())
-	target_status = "Scheduled" if is_future else "Queued"
-
 	transitions: list[tuple[Any, str]] = []
 	for row in target_rows:
+		eff_time = doc.effective_time(row)
+		eff_dt = to_site_datetime(eff_time)
+		is_future = bool(eff_dt and eff_dt > now_datetime())
+		target_status = "Scheduled" if is_future else "Queued"
+
 		if row.status in ("Draft", "Scheduled"):
 			if row.status == target_status:
 				continue  # silent no-op (e.g. already Scheduled and still future)
