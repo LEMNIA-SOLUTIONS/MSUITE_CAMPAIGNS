@@ -252,9 +252,8 @@
   },
   {
    "fieldname": "whatsapp_blast",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "WhatsApp Blast (legacy)",
-   "options": "Bulk WhatsApp Message",
    "read_only": 1,
    "description": "Deprecated \u2014 kept read-only for backward compatibility. A Campaign can now have many broadcasts via Bulk WhatsApp Message.campaign (see patches.add_campaign_link_to_bulk_whatsapp_message). Use the Channels tab's WhatsApp section instead of this field."
   },
@@ -283,21 +282,18 @@
   },
   {
    "fieldname": "audience",
-   "fieldtype": "Link",
-   "label": "Audience",
-   "options": "Audience"
+   "fieldtype": "Data",
+   "label": "Audience"
   },
   {
    "fieldname": "email_blast",
-   "fieldtype": "Link",
-   "label": "Email Blast",
-   "options": "Bulk Email Message"
+   "fieldtype": "Data",
+   "label": "Email Blast"
   },
   {
    "fieldname": "sms_blast",
-   "fieldtype": "Link",
-   "label": "SMS Blast",
-   "options": "Bulk SMS Message"
+   "fieldtype": "Data",
+   "label": "SMS Blast"
   },
   {
    "fieldname": "section_launch_status",
